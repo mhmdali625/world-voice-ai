@@ -1,0 +1,353 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+
+  <title>World Voice AI - Network WebRTC</title>
+
+  <style>
+    body {
+      background: #101827;
+      color: white;
+      font-family: Arial, sans-serif;
+      padding: 25px;
+    }
+
+    h1 {
+      color: #5dd6c0;
+    }
+
+    button {
+      padding: 14px 22px;
+      margin-right: 10px;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      font-weight: bold;
+    }
+
+    button:disabled {
+      opacity: 0.5;
+    }
+
+    #start {
+      background: #5dd6c0;
+    }
+
+    #stop {
+      background: #fca5a5;
+    }
+
+    #status {
+      color: #facc15;
+      font-weight: bold;
+      padding: 12px 0;
+    }
+
+    .videos {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 20px;
+    }
+
+    .panel {
+      flex: 1 1 300px;
+      background: #1e293b;
+      padding: 16px;
+      border-radius: 12px;
+    }
+
+    video {
+      width: 100%;
+      background: black;
+      border-radius: 10px;
+      aspect-ratio: 16 / 9;
+    }
+
+    .note {
+      color: #cbd5e1;
+      line-height: 1.6;
+    }
+  </style>
+</head>
+
+<body>
+  <h1>World Voice AI - Network WebRTC Test</h1>
+
+  <p class="note">
+    Open this page in two browser tabs.
+    Start the first tab before the second.
+  </p>
+
+  <button type="button" id="start">Join WebRTC</button>
+  <button type="button" id="stop" disabled>Disconnect</button>
+
+  <p id="status" role="status">
+    Status: Not connected
+  </p>
+
+  <div class="videos">
+    <div class="panel">
+      <h2>Generated Video</h2>
+      <video id="local" muted playsinline></video>
+    </div>
+
+    <div class="panel">
+      <h2>Received Video</h2>
+      <video id="remote" muted playsinline></video>
+    </div>
+  </div>
+
+  <script>
+    const startButton = document.getElementById('start');
+    const stopButton = document.getElementById('stop');
+    const statusText = document.getElementById('status');
+    const localVideo = document.getElementById('local');
+    const remoteVideo = document.getElementById('remote');
+
+    let socket = null;
+    let pc = null;
+    let stream = null;
+    let animationId = null;
+    let role = null;
+    let offerSent = false;
+
+    const pendingCandidates = [];
+
+    function setStatus(text) {
+      statusText.textContent = 'Status: ' + text;
+    }
+
+    function send(message) {
+      if (socket?.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify(message));
+      }
+    }
+
+    // Generate moving video without requiring a webcam
+    function createVideo() {
+      const canvas = document.createElement('canvas');
+      canvas.width = 640;
+      canvas.height = 360;
+
+      const ctx = canvas.getContext('2d');
+
+      function draw(time) {
+        ctx.fillStyle = '#101827';
+        ctx.fillRect(0, 0, 640, 360);
+
+        ctx.fillStyle = '#5dd6c0';
+        ctx.font = 'bold 34px Arial';
+        ctx.fillText('World Voice AI', 35, 65);
+
+        const x = 320 + Math.sin(time / 500) * 170;
+
+        ctx.beginPath();
+        ctx.arc(x, 190, 40, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = 'white';
+        ctx.font = '22px Arial';
+        ctx.fillText('Network WebRTC Test', 35, 310);
+
+        animationId = requestAnimationFrame(draw);
+      }
+
+      draw(0);
+
+      stream = canvas.captureStream(20);
+      localVideo.srcObject = stream;
+
+      void localVideo.play().catch(console.error);
+
+      stream.getTracks().forEach((track) => {
+        pc.addTrack(track, stream);
+      });
+    }
+
+    async function flushCandidates() {
+      while (pendingCandidates.length > 0) {
+        await pc.addIceCandidate(
+          pendingCandidates.shift()
+        );
+      }
+    }
+
+    async function handleMessage(message) {
+      if (message.type === 'welcome') {
+        role = message.peers === 1
+          ? 'sender'
+          : 'receiver';
+
+        if (role === 'sender') {
+          createVideo();
+          setStatus('Sender ready - waiting for receiver');
+        } else {
+          setStatus('Receiver ready - waiting for offer');
+        }
+
+        return;
+      }
+
+      if (
+        message.type === 'peer-ready' &&
+        role === 'sender' &&
+        !offerSent
+      ) {
+        offerSent = true;
+
+        await pc.setLocalDescription(
+          await pc.createOffer()
+        );
+
+        send({
+          type: 'offer',
+          sdp: pc.localDescription
+        });
+
+        setStatus('Offer sent');
+
+        return;
+      }
+
+      if (
+        message.type === 'offer' &&
+        role === 'receiver'
+      ) {
+        await pc.setRemoteDescription(message.sdp);
+        await flushCandidates();
+
+        await pc.setLocalDescription(
+          await pc.createAnswer()
+        );
+
+        send({
+          type: 'answer',
+          sdp: pc.localDescription
+        });
+
+        setStatus('Answer sent');
+
+        return;
+      }
+
+      if (
+        message.type === 'answer' &&
+        role === 'sender'
+      ) {
+        await pc.setRemoteDescription(message.sdp);
+        await flushCandidates();
+        return;
+      }
+
+      if (message.type === 'candidate') {
+        if (pc.remoteDescription) {
+          await pc.addIceCandidate(message.candidate);
+        } else {
+          pendingCandidates.push(message.candidate);
+        }
+
+        return;
+      }
+
+      if (message.type === 'peer-left') {
+        disconnect();
+        setStatus('Other peer disconnected');
+      }
+    }
+
+    function disconnect() {
+      if (animationId !== null) {
+        cancelAnimationFrame(animationId);
+        animationId = null;
+      }
+
+      stream?.getTracks().forEach(track => track.stop());
+
+      pc?.close();
+      socket?.close();
+
+      pc = null;
+      socket = null;
+      stream = null;
+      role = null;
+      offerSent = false;
+      pendingCandidates.length = 0;
+
+      localVideo.srcObject = null;
+      remoteVideo.srcObject = null;
+
+      startButton.disabled = false;
+      stopButton.disabled = true;
+    }
+
+    startButton.addEventListener('click', () => {
+      startButton.disabled = true;
+      stopButton.disabled = false;
+
+      setStatus('Connecting to signaling server');
+
+      // Both tabs run on the same laptop for this test.
+      pc = new RTCPeerConnection({
+        iceServers: []
+      });
+
+      pc.onicecandidate = (event) => {
+        if (event.candidate) {
+          send({
+            type: 'candidate',
+            candidate: event.candidate.toJSON()
+          });
+        }
+      };
+
+      pc.ontrack = (event) => {
+        remoteVideo.srcObject =
+          event.streams[0] ||
+          new MediaStream([event.track]);
+
+        void remoteVideo.play().catch(console.error);
+      };
+
+      pc.onconnectionstatechange = () => {
+        setStatus('WebRTC ' + pc.connectionState);
+      };
+
+      socket = new WebSocket(
+        'ws://127.0.0.1:3001/signal'
+      );
+
+      socket.onmessage = (event) => {
+        try {
+          const message = JSON.parse(event.data);
+
+          void handleMessage(message).catch((error) => {
+            console.error(error);
+            setStatus('Error: ' + error.message);
+          });
+        } catch (error) {
+          console.error(error);
+          setStatus('Invalid signaling message');
+        }
+      };
+
+      socket.onerror = () => {
+        setStatus('WebSocket connection error');
+      };
+
+      socket.onclose = () => {
+        if (pc && pc.connectionState !== 'connected') {
+          setStatus('Signaling connection closed');
+        }
+      };
+    });
+
+    stopButton.addEventListener('click', () => {
+      disconnect();
+      setStatus('Disconnected');
+    });
+  </script>
+</body>
+</html>

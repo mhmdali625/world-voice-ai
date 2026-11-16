@@ -1,0 +1,426 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+
+  <title>World Voice AI - WebRTC Test</title>
+
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      padding: 25px;
+      background: #101827;
+      color: white;
+      font-family: Arial, sans-serif;
+    }
+
+    h1 {
+      color: #5dd6c0;
+    }
+
+    p {
+      color: #cbd5e1;
+    }
+
+    .controls {
+      margin: 20px 0;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+
+    button {
+      padding: 14px 24px;
+      border: none;
+      border-radius: 8px;
+      font-size: 16px;
+      font-weight: bold;
+      cursor: pointer;
+    }
+
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    #start {
+      background: #5dd6c0;
+      color: #101827;
+    }
+
+    #stop {
+      background: #fca5a5;
+      color: #101827;
+    }
+
+    #status {
+      color: #facc15;
+      font-weight: bold;
+      margin: 20px 0;
+    }
+
+    .videos {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 20px;
+    }
+
+    .video-card {
+      padding: 20px;
+      background: #1e293b;
+      border-radius: 14px;
+      min-width: 0;
+    }
+
+    .video-card h2 {
+      font-size: 20px;
+    }
+
+    video {
+      display: block;
+      width: 100%;
+      aspect-ratio: 16 / 9;
+      background: #000;
+      border-radius: 12px;
+    }
+
+    .note {
+      margin-top: 25px;
+      padding: 16px;
+      background: #1e293b;
+      border-radius: 10px;
+      line-height: 1.6;
+    }
+
+    @media (max-width: 750px) {
+      .videos {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <h1>World Voice AI - WebRTC Experiment</h1>
+
+  <p>
+    Testing real-time peer-to-peer video communication
+    using the browser's WebRTC API.
+  </p>
+
+  <div class="controls">
+    <button type="button" id="start">
+      Start WebRTC
+    </button>
+
+    <button type="button" id="stop" disabled>
+      Stop WebRTC
+    </button>
+  </div>
+
+  <p id="status" role="status" aria-live="polite">
+    Status: Not connected
+  </p>
+
+  <div class="videos">
+
+    <section class="video-card">
+      <h2>Peer A - Original Video</h2>
+
+      <video
+    id="local"
+    muted
+    playsinline
+    ></video>
+
+      <p>
+        This video is generated in the browser
+        using an HTML Canvas.
+      </p>
+    </section>
+
+    <section class="video-card">
+      <h2>Peer B - Received Video</h2>
+
+    <video
+     id="remote"
+     muted
+     playsinline
+    ></video>
+
+      <p>
+        This video is received using
+        RTCPeerConnection.
+      </p>
+    </section>
+
+  </div>
+
+  <div class="note">
+    <strong>Experiment Information</strong>
+
+    <p>
+      Both peers run inside the same browser.
+      The connection uses real WebRTC APIs.
+    </p>
+
+    <p>
+      No webcam, external server, or paid service
+      is required for this experiment.
+    </p>
+  </div>
+
+  <script>
+    // -----------------------------------------
+    // 1. Get HTML elements
+    // -----------------------------------------
+
+    const localVideo = document.getElementById('local');
+    const remoteVideo = document.getElementById('remote');
+
+    const statusText = document.getElementById('status');
+
+    const startButton = document.getElementById('start');
+    const stopButton = document.getElementById('stop');
+
+    // -----------------------------------------
+    // 2. Create a canvas for video generation
+    // -----------------------------------------
+
+    const canvas = document.createElement('canvas');
+
+    canvas.width = 640;
+    canvas.height = 360;
+
+    const ctx = canvas.getContext('2d');
+
+    let animationId = null;
+
+    let sender = null;
+    let receiver = null;
+    let stream = null;
+
+    // -----------------------------------------
+    // 3. Generate moving video frames
+    // -----------------------------------------
+
+    function drawFrame(time) {
+      // Clear the background
+      ctx.fillStyle = '#101827';
+      ctx.fillRect(0, 0, 640, 360);
+
+      // Draw the title
+      ctx.fillStyle = '#5dd6c0';
+      ctx.font = 'bold 36px Arial';
+
+      ctx.fillText('World Voice AI', 35, 65);
+
+      // Calculate a moving position
+      const x = 320 + Math.sin(time / 500) * 180;
+
+      // Draw a moving circle
+      ctx.beginPath();
+      ctx.arc(x, 190, 45, 0, Math.PI * 2);
+
+      ctx.fillStyle = '#5dd6c0';
+      ctx.fill();
+
+      // Draw bottom text
+      ctx.fillStyle = '#ffffff';
+      ctx.font = '22px Arial';
+
+      ctx.fillText('WebRTC Live Video Test', 35, 310);
+
+      // Continue drawing
+      animationId = requestAnimationFrame(drawFrame);
+    }
+
+    // -----------------------------------------
+    // 4. Wait for ICE gathering
+    // -----------------------------------------
+
+    function waitForIce(pc) {
+      return new Promise((resolve) => {
+        if (pc.iceGatheringState === 'complete') {
+          resolve();
+          return;
+        }
+
+        const checkState = () => {
+          if (pc.iceGatheringState === 'complete') {
+            pc.removeEventListener(
+              'icegatheringstatechange',
+              checkState
+            );
+
+            resolve();
+          }
+        };
+
+        pc.addEventListener(
+          'icegatheringstatechange',
+          checkState
+        );
+      });
+    }
+
+    // -----------------------------------------
+    // 5. Stop WebRTC
+    // -----------------------------------------
+
+    function stopWebRTC() {
+      if (animationId !== null) {
+        cancelAnimationFrame(animationId);
+        animationId = null;
+      }
+
+      if (stream) {
+        stream.getTracks().forEach((track) => {
+          track.stop();
+        });
+      }
+
+      if (receiver) {
+        receiver.onconnectionstatechange = null;
+        receiver.close();
+      }
+
+      if (sender) {
+        sender.close();
+      }
+
+      sender = null;
+      receiver = null;
+      stream = null;
+
+      localVideo.pause();
+      remoteVideo.pause();
+
+      localVideo.srcObject = null;
+      remoteVideo.srcObject = null;
+
+      startButton.disabled = false;
+      stopButton.disabled = true;
+
+      statusText.textContent = 'Status: Disconnected';
+    }
+
+    // -----------------------------------------
+    // 6. Start WebRTC
+    // -----------------------------------------
+
+    startButton.addEventListener('click', async () => {
+      startButton.disabled = true;
+
+      try {
+        statusText.textContent = 'Status: Connecting...';
+
+        // Start canvas animation
+        drawFrame(0);
+
+        // Convert canvas animation into a MediaStream
+        stream = canvas.captureStream(20);
+
+        // Display generated video locally
+        localVideo.srcObject = stream;
+
+        await localVideo.play();
+
+        // Create two WebRTC peer connections
+        // No STUN server is needed for this same-device test
+        sender = new RTCPeerConnection({
+          iceServers: []
+        });
+
+        receiver = new RTCPeerConnection({
+          iceServers: []
+        });
+
+        // Receive the video track
+        receiver.ontrack = (event) => {
+          const receivedStream =
+            event.streams[0] ||
+            new MediaStream([event.track]);
+
+          remoteVideo.srcObject = receivedStream;
+
+          remoteVideo.play().catch((error) => {
+            console.error('Remote playback error:', error);
+          });
+        };
+
+        // Watch the connection state
+        receiver.onconnectionstatechange = () => {
+          statusText.textContent =
+            'Connection: ' + receiver.connectionState;
+
+          if (receiver.connectionState === 'connected') {
+            remoteVideo.play().catch(console.error);
+          }
+        };
+
+        // Add the generated video track
+        stream.getTracks().forEach((track) => {
+          sender.addTrack(track, stream);
+        });
+
+        // -----------------------------------
+        // 7. Offer / Answer negotiation
+        // -----------------------------------
+
+        // Peer A creates an offer
+        const offer = await sender.createOffer();
+
+        await sender.setLocalDescription(offer);
+
+        // Collect ICE candidates
+        await waitForIce(sender);
+
+        // Peer B receives the offer
+        await receiver.setRemoteDescription(
+          sender.localDescription
+        );
+
+        // Peer B creates an answer
+        const answer = await receiver.createAnswer();
+
+        await receiver.setLocalDescription(answer);
+
+        // Collect ICE candidates
+        await waitForIce(receiver);
+
+        // Peer A receives the answer
+        await sender.setRemoteDescription(
+          receiver.localDescription
+        );
+
+        stopButton.disabled = false;
+
+        console.log('WebRTC negotiation completed');
+
+      } catch (error) {
+        console.error('WebRTC error:', error);
+
+        stopWebRTC();
+
+        statusText.textContent =
+          'Status: Error - ' + error.message;
+      }
+    });
+
+    // -----------------------------------------
+    // 8. Stop button
+    // -----------------------------------------
+
+    stopButton.addEventListener('click', () => {
+      stopWebRTC();
+    });
+  </script>
+</body>
+</html>
