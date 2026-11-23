@@ -1,5 +1,6 @@
 
 import { createServer } from 'node:http';
+import { networkInterfaces } from 'node:os';
 import { WebSocketServer, WebSocket } from 'ws';
 
 // ==========================================
@@ -8,19 +9,67 @@ import { WebSocketServer, WebSocket } from 'ws';
 
 const PORT = 3001;
 
-// Store the most recently uploaded photo in memory
 let latestPhoto = null;
 
-// Allowed local dashboard origins
-const allowedOrigins = new Set([
-  'http://localhost:5173',
-  'http://127.0.0.1:5173',
-  'http://localhost:5174',
-  'http://127.0.0.1:5174',
-]);
+// ==========================================
+// 1. AUTOMATIC LOCAL IP DETECTION
+// ==========================================
+
+// Detect laptop IP addresses automatically.
+// No need to hardcode 192.168.0.107 here.
+function getLocalIPs() {
+  const addresses = new Set(['127.0.0.1']);
+  const interfaces = networkInterfaces();
+
+  for (const entries of Object.values(interfaces)) {
+    if (!entries) continue;
+
+    for (const item of entries) {
+      if (
+        item.family === 'IPv4' &&
+        !item.internal
+      ) {
+        addresses.add(item.address);
+      }
+    }
+  }
+
+  return [...addresses];
+}
+
+// Only these local development ports are allowed.
+const ALLOWED_PORTS = [
+  3001, // Node.js relay
+  5173, // Vite
+  5174, // Vite alternate
+  5175, // Vite alternate
+  8081, // Expo Metro
+  8082, // Expo Metro alternate
+];
+
+// Build the allowed origin list dynamically.
+function getAllowedOrigins() {
+  const origins = new Set();
+  const hosts = ['localhost', ...getLocalIPs()];
+
+  for (const host of hosts) {
+    for (const port of ALLOWED_PORTS) {
+      origins.add(`http://${host}:${port}`);
+    }
+  }
+
+  return origins;
+}
+
+function isAllowedOrigin(origin) {
+  return (
+    typeof origin === 'string' &&
+    getAllowedOrigins().has(origin)
+  );
+}
 
 // ==========================================
-// 1. HTTP SERVER
+// 2. HTTP SERVER
 // ==========================================
 
 const server = createServer(async (req, res) => {
@@ -34,8 +83,8 @@ const server = createServer(async (req, res) => {
     'Cache-Control': 'no-store',
   };
 
-  // Allow requests from our React dashboard
-  if (allowedOrigins.has(req.headers.origin)) {
+  // Allow our local React dashboard.
+  if (isAllowedOrigin(req.headers.origin)) {
     headers['Access-Control-Allow-Origin'] =
       req.headers.origin;
 
@@ -46,13 +95,12 @@ const server = createServer(async (req, res) => {
       'Content-Type';
   }
 
-  // Send a JSON response
-  const send = (status, data) => {
+  function send(status, data) {
     res.writeHead(status, headers);
     res.end(JSON.stringify(data));
-  };
+  }
 
-  // Handle CORS preflight requests
+  // Handle browser CORS preflight requests.
   if (req.method === 'OPTIONS') {
     res.writeHead(204, headers);
     res.end();
@@ -60,7 +108,7 @@ const server = createServer(async (req, res) => {
   }
 
   // ========================================
-  // 2. HEALTH CHECK
+  // 3. HEALTH CHECK
   // ========================================
 
   if (
@@ -80,7 +128,7 @@ const server = createServer(async (req, res) => {
   }
 
   // ========================================
-  // 3. GET LATEST PHOTO
+  // 4. GET LATEST PHOTO
   // ========================================
 
   if (
@@ -95,7 +143,7 @@ const server = createServer(async (req, res) => {
   }
 
   // ========================================
-  // 4. RECEIVE PHOTO FROM MOBILE APP
+  // 5. RECEIVE PHOTO FROM ANDROID
   // ========================================
 
   if (
@@ -109,7 +157,6 @@ const server = createServer(async (req, res) => {
       for await (const chunk of req) {
         bodySize += chunk.length;
 
-        // Reject very large uploads
         if (bodySize > 8_000_000) {
           send(413, {
             error: 'Photo is too large',
@@ -124,7 +171,6 @@ const server = createServer(async (req, res) => {
       const data = JSON.parse(body);
       const image = data.imageBase64;
 
-      // Validate Base64 format
       if (
         typeof image !== 'string' ||
         !/^[A-Za-z0-9+/]+={0,2}$/.test(image) ||
@@ -139,7 +185,7 @@ const server = createServer(async (req, res) => {
 
       const bytes = Buffer.from(image, 'base64');
 
-      // Verify JPEG signature
+      // JPEG files begin with FF D8.
       if (
         bytes[0] !== 0xff ||
         bytes[1] !== 0xd8
@@ -151,7 +197,6 @@ const server = createServer(async (req, res) => {
         return;
       }
 
-      // Save the latest photo in memory
       latestPhoto = {
         capturedAt: new Date().toISOString(),
         dataUrl: `data:image/jpeg;base64,${image}`,
@@ -165,11 +210,12 @@ const server = createServer(async (req, res) => {
         success: true,
         message: 'Photo received successfully',
       });
-
     } catch (error) {
       console.error(
         'Photo upload error:',
-        error.message
+        error instanceof Error
+          ? error.message
+          : error
       );
 
       send(400, {
@@ -180,59 +226,101 @@ const server = createServer(async (req, res) => {
     return;
   }
 
-  // Unknown HTTP route
+  // Unknown HTTP route.
   send(404, {
     error: 'Route not found',
   });
 });
 
 // ==========================================
-// 5. WEBRTC WEBSOCKET SIGNALING SERVER
+// 6. WEBRTC SIGNALING SERVER
 // ==========================================
 
-// WebSocket shares port 3001 with HTTP
 const signalingServer = new WebSocketServer({
   server,
   path: '/signal',
   maxPayload: 64 * 1024,
 });
 
-// Initial experiment: maximum 2 peers
+// Maximum two active peers:
+// one Android phone and one browser receiver.
 const peers = new Set();
 
 signalingServer.on(
   'connection',
   (socket, request) => {
-
     const origin = request.headers.origin;
 
-    // Restrict browser-based connections
-    // Node test clients may omit the Origin header.
-    if (origin && !allowedOrigins.has(origin)) {
-      socket.close(1008, 'Origin not allowed');
+    console.log(
+      'Incoming WebSocket Origin:',
+      origin ?? '(no Origin header)'
+    );
+
+    // Recalculate accepted IPs for each connection.
+    // This handles laptop DHCP address changes.
+    if (
+      origin &&
+      !isAllowedOrigin(origin)
+    ) {
+      console.warn(
+        'Rejected WebSocket Origin:',
+        origin
+      );
+
+      console.warn(
+        'Current laptop IPs:',
+        getLocalIPs().join(', ')
+      );
+
+      socket.close(
+        1008,
+        'Origin not allowed'
+      );
+
       return;
     }
 
-    // Restrict our experimental room to 2 peers
     if (peers.size >= 2) {
-      socket.close(1008, 'Room is full');
+      console.warn(
+        'WebSocket rejected: room full'
+      );
+
+      socket.close(
+        1008,
+        'Room is full'
+      );
+
       return;
     }
+
+    // ======================================
+    // 7. REGISTER CONNECTED PEER
+    // ======================================
 
     peers.add(socket);
+
+    // Used to detect abandoned connections.
+    socket.isAlive = true;
+
+    socket.on('pong', () => {
+      socket.isAlive = true;
+    });
 
     console.log(
       `WebRTC signaling peer connected (${peers.size}/2)`
     );
 
-    // Notify the new peer
     socket.send(JSON.stringify({
       type: 'welcome',
       peers: peers.size,
     }));
 
-    // Notify the existing peer when a second joins
+    // Notify both devices when ready.
     if (peers.size === 2) {
+      console.log(
+        'WebRTC room ready: 2 peers connected'
+      );
+
       for (const peer of peers) {
         if (peer.readyState === WebSocket.OPEN) {
           peer.send(JSON.stringify({
@@ -243,18 +331,24 @@ signalingServer.on(
     }
 
     // ======================================
-    // 6. HANDLE SIGNALING MESSAGES
+    // 8. FORWARD SIGNALING MESSAGES
     // ======================================
 
     socket.on('message', (raw, isBinary) => {
-      if (isBinary) return;
+      if (isBinary) {
+        console.warn(
+          'Ignoring binary signaling message'
+        );
+
+        return;
+      }
 
       let message;
 
       try {
         message = JSON.parse(raw.toString());
       } catch {
-        console.log('Invalid WebSocket JSON');
+        console.warn('Invalid WebSocket JSON');
         return;
       }
 
@@ -271,7 +365,8 @@ signalingServer.on(
         `Signaling message received: ${message.type}`
       );
 
-      // Forward the message to the other peer
+      // Send the offer, answer, or ICE
+      // candidate to the other peer.
       for (const peer of peers) {
         if (
           peer !== socket &&
@@ -283,17 +378,23 @@ signalingServer.on(
     });
 
     // ======================================
-    // 7. HANDLE DISCONNECTION
+    // 9. HANDLE PEER DISCONNECTION
     // ======================================
 
-    socket.on('close', () => {
+    socket.on('close', (code, reason) => {
       peers.delete(socket);
 
       console.log(
-        `WebRTC peer disconnected (${peers.size}/2)`
+        'WebRTC peer closed:',
+        code,
+        reason.toString() || '(no reason)'
       );
 
-      // Inform remaining peer
+      console.log(
+        `WebRTC peers remaining: ${peers.size}/2`
+      );
+
+      // Inform the remaining device.
       for (const peer of peers) {
         if (peer.readyState === WebSocket.OPEN) {
           peer.send(JSON.stringify({
@@ -313,11 +414,59 @@ signalingServer.on(
 );
 
 // ==========================================
-// 8. START THE SERVER
+// 10. DETECT STALE CONNECTIONS
+// ==========================================
+
+// Wi-Fi interruptions can leave old sockets
+// in the room even when devices are gone.
+//
+// Ping each device every 10 seconds.
+// If a device misses a heartbeat, remove
+// its connection so it can rejoin.
+
+const heartbeatInterval = setInterval(() => {
+  for (const peer of peers) {
+    if (peer.isAlive === false) {
+      console.warn(
+        'WebRTC peer timed out - removing stale connection'
+      );
+
+      peer.terminate();
+      continue;
+    }
+
+    if (peer.readyState === WebSocket.OPEN) {
+      peer.isAlive = false;
+
+      try {
+        peer.ping();
+      } catch (error) {
+        console.error(
+          'WebSocket ping error:',
+          error
+        );
+
+        peer.terminate();
+      }
+    }
+  }
+}, 10000);
+
+heartbeatInterval.unref();
+
+server.on('close', () => {
+  clearInterval(heartbeatInterval);
+});
+
+// ==========================================
+// 11. START SERVER
 // ==========================================
 
 server.on('error', (error) => {
-  console.error('Server error:', error.message);
+  console.error(
+    'Server error:',
+    error.message
+  );
 });
 
 server.listen(PORT, '0.0.0.0', () => {
@@ -327,9 +476,28 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log('================================');
 
   console.log(`HTTP Port: ${PORT}`);
-  console.log(`Health: http://localhost:${PORT}/health`);
-  console.log(`Photos: http://localhost:${PORT}/api/photo`);
-  console.log(`WebSocket: ws://localhost:${PORT}/signal`);
+  console.log(
+    `Health: http://localhost:${PORT}/health`
+  );
+  console.log(
+    `Photos: http://localhost:${PORT}/api/photo`
+  );
+  console.log(
+    `WebSocket: ws://localhost:${PORT}/signal`
+  );
+
+  console.log(
+    'Detected local IPs:',
+    getLocalIPs().join(', ')
+  );
+
+  console.log(
+    'Origin allowlist: automatic'
+  );
+
+  console.log(
+    'WebRTC stale-connection cleanup: enabled'
+  );
 
   console.log('================================');
   console.log('Server ready!');

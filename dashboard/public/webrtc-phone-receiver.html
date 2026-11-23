@@ -1,0 +1,799 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1.0"
+  >
+
+  <title>World Voice AI - Live Camera Receiver</title>
+
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      padding: 40px 20px;
+      font-family: Arial, sans-serif;
+      background: #101827;
+      color: white;
+    }
+
+    main {
+      max-width: 1000px;
+      margin: 0 auto;
+      text-align: center;
+    }
+
+    h1 {
+      color: #55d6c3;
+      font-size: 40px;
+      margin: 35px 0 22px;
+    }
+
+    h2 {
+      font-size: 28px;
+      margin-bottom: 38px;
+    }
+
+    .receiver-card {
+      background: #202c40;
+      border-radius: 20px;
+      padding: 26px;
+    }
+
+    #status {
+      font-size: 23px;
+      color: #55d6c3;
+      margin: 0 0 25px;
+    }
+
+    .video-container {
+      position: relative;
+      width: 100%;
+      height: clamp(300px, 50vw, 600px);
+      background: black;
+      border-radius: 15px;
+      overflow: hidden;
+    }
+
+    /*
+      Keep the video element active.
+
+      The browser receives and decodes WebRTC
+      frames using this video element.
+
+      The canvas draws those decoded frames
+      so they appear correctly on the page.
+    */
+    #remoteVideo {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      opacity: 0.001;
+      pointer-events: none;
+      z-index: 1;
+    }
+
+    #videoCanvas {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      display: block;
+      background: black;
+      z-index: 2;
+    }
+
+    #videoInfo {
+      font-size: 19px;
+      margin: 25px 0 20px;
+    }
+
+    button {
+      background: #55d6c3;
+      color: #101827;
+      border: none;
+      border-radius: 12px;
+      padding: 18px 30px;
+      font-size: 18px;
+      font-weight: bold;
+      cursor: pointer;
+    }
+
+    button:hover {
+      background: #45c4b2;
+    }
+
+    button:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+    }
+
+    @media (max-width: 600px) {
+      body {
+        padding: 20px 12px;
+      }
+
+      h1 {
+        font-size: 30px;
+      }
+
+      h2 {
+        font-size: 22px;
+      }
+
+      .receiver-card {
+        padding: 15px;
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <main>
+    <h1>World Voice AI</h1>
+
+    <h2>Android Live Camera Receiver</h2>
+
+    <section class="receiver-card">
+      <p id="status">
+        Connecting to signaling server...
+      </p>
+
+      <div class="video-container">
+        <video
+          id="remoteVideo"
+          playsinline
+          muted
+        ></video>
+
+        <canvas id="videoCanvas"></canvas>
+      </div>
+
+      <p id="videoInfo">
+        The live Android camera will appear here
+        after the phone connects.
+      </p>
+
+      <button
+        id="disconnectButton"
+        type="button"
+      >
+        Disconnect
+      </button>
+    </section>
+  </main>
+
+  <script>
+    // ==========================================
+    // WORLD VOICE AI - WEBRTC VIDEO RECEIVER
+    // ==========================================
+
+    const SIGNALING_URL =
+      'ws://127.0.0.1:3001/signal';
+
+    const rtcConfiguration = {
+      iceServers: [
+        {
+          urls: 'stun:stun.l.google.com:19302'
+        }
+      ]
+    };
+
+    // ==========================================
+    // 1. HTML ELEMENTS
+    // ==========================================
+
+    const statusElement =
+      document.getElementById('status');
+
+    const videoInfo =
+      document.getElementById('videoInfo');
+
+    const video =
+      document.getElementById('remoteVideo');
+
+    const canvas =
+      document.getElementById('videoCanvas');
+
+    const ctx =
+      canvas.getContext('2d');
+
+    const disconnectButton =
+      document.getElementById('disconnectButton');
+
+    // ==========================================
+    // 2. CONNECTION STATE
+    // ==========================================
+
+    let socket = null;
+
+    let pc = null;
+
+    let pendingCandidates = [];
+
+    let manuallyDisconnected = false;
+
+    let videoShowing = false;
+
+    // ==========================================
+    // 3. STATUS UPDATES
+    // ==========================================
+
+    function updateStatus(message) {
+      statusElement.textContent = message;
+
+      console.log(
+        '[Receiver]',
+        message
+      );
+    }
+
+    // ==========================================
+    // 4. SEND SIGNALING MESSAGES
+    // ==========================================
+
+    function sendSignaling(message) {
+      if (
+        socket &&
+        socket.readyState === WebSocket.OPEN
+      ) {
+        socket.send(
+          JSON.stringify(message)
+        );
+      }
+    }
+
+    // ==========================================
+    // 5. CANVAS VIDEO RENDERING
+    // ==========================================
+
+    /*
+      Why use canvas?
+
+      The browser is receiving valid WebRTC video,
+      but the original video element appeared black.
+
+      We verified that drawing video frames onto
+      a canvas displays the camera correctly.
+
+      This renderer makes that fix permanent.
+    */
+
+    function renderVideo() {
+      const width = canvas.clientWidth;
+
+      const height = canvas.clientHeight;
+
+      if (width > 0 && height > 0) {
+        // Support high-resolution laptop screens.
+        const pixelRatio = Math.min(
+          window.devicePixelRatio || 1,
+          2
+        );
+
+        const pixelWidth = Math.round(
+          width * pixelRatio
+        );
+
+        const pixelHeight = Math.round(
+          height * pixelRatio
+        );
+
+        // Resize canvas only when necessary.
+        if (
+          canvas.width !== pixelWidth ||
+          canvas.height !== pixelHeight
+        ) {
+          canvas.width = pixelWidth;
+          canvas.height = pixelHeight;
+        }
+
+        ctx.setTransform(
+          pixelRatio,
+          0,
+          0,
+          pixelRatio,
+          0,
+          0
+        );
+
+        // Clear the old frame.
+        ctx.fillStyle = 'black';
+
+        ctx.fillRect(
+          0,
+          0,
+          width,
+          height
+        );
+
+        // Draw only when video data is available.
+        if (
+          video.srcObject &&
+          video.readyState >= 2 &&
+          video.videoWidth > 0 &&
+          video.videoHeight > 0
+        ) {
+          // Keep the correct video aspect ratio.
+          const scale = Math.min(
+            width / video.videoWidth,
+            height / video.videoHeight
+          );
+
+          const drawWidth =
+            video.videoWidth * scale;
+
+          const drawHeight =
+            video.videoHeight * scale;
+
+          // Center the portrait camera video.
+          const x =
+            (width - drawWidth) / 2;
+
+          const y =
+            (height - drawHeight) / 2;
+
+          // Draw the current video frame.
+          ctx.drawImage(
+            video,
+            x,
+            y,
+            drawWidth,
+            drawHeight
+          );
+
+          // Update the status only once.
+          if (!videoShowing) {
+            videoShowing = true;
+
+            updateStatus(
+              'Live Android camera streaming'
+            );
+
+            videoInfo.textContent =
+              'Android camera video is being displayed.';
+
+            console.log(
+              '[Receiver] Video resolution:',
+              video.videoWidth,
+              'x',
+              video.videoHeight
+            );
+          }
+        }
+      }
+
+      // Continue drawing new frames.
+      requestAnimationFrame(renderVideo);
+    }
+
+    // Start the permanent rendering loop.
+    renderVideo();
+
+    // ==========================================
+    // 6. CREATE WEBRTC PEER CONNECTION
+    // ==========================================
+
+    function createPeerConnection() {
+      // Close any previous WebRTC connection.
+      if (pc) {
+        pc.onconnectionstatechange = null;
+
+        pc.close();
+      }
+
+      videoShowing = false;
+
+      video.srcObject = null;
+
+      pc = new RTCPeerConnection(
+        rtcConfiguration
+      );
+
+      // ========================================
+      // SEND LOCAL ICE CANDIDATES
+      // ========================================
+
+      pc.onicecandidate = (event) => {
+        if (event.candidate) {
+          sendSignaling({
+            type: 'candidate',
+            candidate: event.candidate.toJSON()
+          });
+        }
+      };
+
+      // ========================================
+      // RECEIVE AND PLAY ANDROID VIDEO
+      // ========================================
+
+      pc.ontrack = (event) => {
+        console.log(
+          '[Receiver] Remote video track received'
+        );
+
+        // The sender normally provides a stream.
+        // Create one if only a track is provided.
+        const remoteStream =
+          event.streams[0] ||
+          new MediaStream([event.track]);
+
+        video.srcObject = remoteStream;
+
+        video.play()
+          .then(() => {
+            console.log(
+              '[Receiver] Video playback started'
+            );
+          })
+          .catch((error) => {
+            console.error(
+              '[Receiver] Video playback error:',
+              error
+            );
+
+            updateStatus(
+              'Video playback blocked - check Console'
+            );
+          });
+      };
+
+      // ========================================
+      // TRACK WEBRTC CONNECTION STATE
+      // ========================================
+
+      pc.onconnectionstatechange = () => {
+        const state = pc.connectionState;
+
+        console.log(
+          '[Receiver] WebRTC state:',
+          state
+        );
+
+        if (
+          state === 'connected' &&
+          !videoShowing
+        ) {
+          updateStatus(
+            'WebRTC connected - starting video...'
+          );
+        }
+
+        if (state === 'failed') {
+          updateStatus(
+            'WebRTC connection failed'
+          );
+        }
+
+        if (
+          state === 'disconnected' &&
+          !manuallyDisconnected
+        ) {
+          updateStatus(
+            'WebRTC connection interrupted'
+          );
+        }
+      };
+
+      return pc;
+    }
+
+    // ==========================================
+    // 7. HANDLE ANDROID WEBRTC OFFER
+    // ==========================================
+
+    async function handleOffer(message) {
+      updateStatus(
+        'Offer received - negotiating WebRTC...'
+      );
+
+      const connection =
+        createPeerConnection();
+
+      // Set Android's offer as remote description.
+      await connection.setRemoteDescription(
+        message.sdp
+      );
+
+      // Process candidates received before
+      // the remote description was available.
+      const queued = pendingCandidates;
+
+      pendingCandidates = [];
+
+      for (const candidate of queued) {
+        try {
+          await connection.addIceCandidate(
+            candidate
+          );
+        } catch (error) {
+          console.error(
+            '[Receiver] Queued ICE error:',
+            error
+          );
+        }
+      }
+
+      // Create the laptop's answer.
+      const answer =
+        await connection.createAnswer();
+
+      await connection.setLocalDescription(
+        answer
+      );
+
+      // Send the answer back to Android.
+      sendSignaling({
+        type: 'answer',
+        sdp: connection.localDescription
+      });
+
+      console.log(
+        '[Receiver] SDP answer sent'
+      );
+    }
+
+    // ==========================================
+    // 8. HANDLE REMOTE ICE CANDIDATES
+    // ==========================================
+
+    async function handleCandidate(message) {
+      if (!message.candidate) {
+        return;
+      }
+
+      // Queue candidates if we have not yet
+      // received the Android offer.
+      if (
+        !pc ||
+        !pc.remoteDescription
+      ) {
+        pendingCandidates.push(
+          message.candidate
+        );
+
+        return;
+      }
+
+      try {
+        await pc.addIceCandidate(
+          message.candidate
+        );
+      } catch (error) {
+        console.error(
+          '[Receiver] ICE candidate error:',
+          error
+        );
+      }
+    }
+
+    // ==========================================
+    // 9. CLOSE WEBRTC PEER CONNECTION
+    // ==========================================
+
+    function closePeerConnection() {
+      if (pc) {
+        pc.onconnectionstatechange = null;
+
+        pc.close();
+
+        pc = null;
+      }
+
+      video.pause();
+
+      video.srcObject = null;
+
+      pendingCandidates = [];
+
+      videoShowing = false;
+
+      videoInfo.textContent =
+        'The live Android camera will appear here ' +
+        'after the phone connects.';
+    }
+
+    // ==========================================
+    // 10. CONNECT TO SIGNALING SERVER
+    // ==========================================
+
+    function connectSignaling() {
+      updateStatus(
+        'Connecting to signaling server...'
+      );
+
+      socket = new WebSocket(
+        SIGNALING_URL
+      );
+
+      // ========================================
+      // WEBSOCKET CONNECTED
+      // ========================================
+
+      socket.onopen = () => {
+        updateStatus(
+          'Waiting for Android phone'
+        );
+
+        console.log(
+          '[Receiver] Signaling connected'
+        );
+      };
+
+      // ========================================
+      // RECEIVE SIGNALING MESSAGES
+      // ========================================
+
+      socket.onmessage = async (event) => {
+        let message;
+
+        try {
+          message = JSON.parse(
+            event.data
+          );
+        } catch (error) {
+          console.error(
+            '[Receiver] Invalid signaling JSON:',
+            error
+          );
+
+          return;
+        }
+
+        try {
+          switch (message.type) {
+            // ==================================
+            // SERVER WELCOME
+            // ==================================
+
+            case 'welcome':
+              console.log(
+                '[Receiver] Peers:',
+                message.peers
+              );
+
+              if (message.peers === 2) {
+                updateStatus(
+                  'Phone detected - waiting for offer'
+                );
+              }
+
+              break;
+
+            // ==================================
+            // BOTH PEERS ARE READY
+            // ==================================
+
+            case 'peer-ready':
+              updateStatus(
+                'Phone connected - waiting for offer'
+              );
+
+              break;
+
+            // ==================================
+            // ANDROID SENT WEBRTC OFFER
+            // ==================================
+
+            case 'offer':
+              await handleOffer(message);
+
+              break;
+
+            // ==================================
+            // ANDROID SENT ICE CANDIDATE
+            // ==================================
+
+            case 'candidate':
+              await handleCandidate(message);
+
+              break;
+
+            // ==================================
+            // ANDROID DISCONNECTED
+            // ==================================
+
+            case 'peer-left':
+              closePeerConnection();
+
+              updateStatus(
+                'Android disconnected - waiting for phone'
+              );
+
+              break;
+
+            // ==================================
+            // UNKNOWN MESSAGE
+            // ==================================
+
+            default:
+              console.log(
+                '[Receiver] Ignored message:',
+                message.type
+              );
+          }
+        } catch (error) {
+          console.error(
+            '[Receiver] Signaling error:',
+            error
+          );
+
+          updateStatus(
+            'Signaling error - check Console'
+          );
+        }
+      };
+
+      // ========================================
+      // WEBSOCKET ERROR
+      // ========================================
+
+      socket.onerror = (error) => {
+        console.error(
+          '[Receiver] WebSocket error:',
+          error
+        );
+      };
+
+      // ========================================
+      // WEBSOCKET DISCONNECTED
+      // ========================================
+
+      socket.onclose = (event) => {
+        console.log(
+          '[Receiver] WebSocket closed:',
+          event.code,
+          event.reason
+        );
+
+        closePeerConnection();
+
+        if (!manuallyDisconnected) {
+          updateStatus(
+            'Signaling disconnected'
+          );
+        }
+      };
+    }
+
+    // ==========================================
+    // 11. DISCONNECT BUTTON
+    // ==========================================
+
+    disconnectButton.addEventListener(
+      'click',
+      () => {
+        manuallyDisconnected = true;
+
+        closePeerConnection();
+
+        if (socket) {
+          socket.close();
+
+          socket = null;
+        }
+
+        updateStatus(
+          'Disconnected'
+        );
+
+        disconnectButton.disabled = true;
+      }
+    );
+
+    // ==========================================
+    // 12. START THE RECEIVER
+    // ==========================================
+
+    connectSignaling();
+  </script>
+</body>
+</html>

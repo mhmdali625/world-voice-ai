@@ -14,32 +14,36 @@ import {
 } from 'react-native';
 
 import VoiceRecorder from './Components/VoiceRecorder';
+import WebRTCCameraTest from './Components/WebRTCCameraTest';
 import { analyzePhoto } from './Services/mockAi';
 
-// Temporary local relay server on your laptop
-const RELAY_URL = 'http://192.168.0.109:3001';
+// Laptop's latest known Wi-Fi IP.
+// Change this if your laptop IP changes.
+const RELAY_URL = 'http://192.168.0.103:3001';
 
 export default function App() {
   const [permission, requestPermission] = useCameraPermissions();
 
-  // Camera references
+  // Existing Expo camera
   const cameraRef = useRef<CameraView>(null);
   const photoBase64 = useRef<string | null>(null);
 
-  // Camera states
   const [cameraOpen, setCameraOpen] = useState(false);
   const [cameraReady, setCameraReady] = useState(false);
   const [photoUri, setPhotoUri] = useState<string | null>(null);
   const [capturing, setCapturing] = useState(false);
 
-  // AI states
+  // Native WebRTC camera test
+  const [webRtcTestOpen, setWebRtcTestOpen] = useState(false);
+
+  // AI demo
   const [analyzing, setAnalyzing] = useState(false);
   const [aiAnswer, setAiAnswer] = useState<string | null>(null);
 
-  // Upload state
+  // Dashboard upload
   const [uploading, setUploading] = useState(false);
 
-  // 1. Capture a photo
+  // 1. Capture photo with Expo Camera
   const takePhoto = async () => {
     if (!cameraRef.current || !cameraReady || capturing) {
       return;
@@ -64,7 +68,9 @@ export default function App() {
           'Could not capture the image data.'
         );
       }
-    } catch {
+    } catch (error) {
+      console.error('Photo capture error:', error);
+
       Alert.alert(
         'Camera error',
         'Could not capture the photo.'
@@ -74,9 +80,11 @@ export default function App() {
     }
   };
 
-  // 2. Get a simulated AI response
+  // 2. Get simulated AI response
   const handleAnalyze = async () => {
-    if (!photoUri || analyzing || uploading) return;
+    if (!photoUri || analyzing || uploading) {
+      return;
+    }
 
     try {
       setAnalyzing(true);
@@ -85,7 +93,9 @@ export default function App() {
       const answer = await analyzePhoto(photoUri);
 
       setAiAnswer(answer);
-    } catch {
+    } catch (error) {
+      console.error('Analysis error:', error);
+
       Alert.alert(
         'Error',
         'Could not get the demo response.'
@@ -95,9 +105,11 @@ export default function App() {
     }
   };
 
-  // 3. Send a captured photo to the local relay server
+  // 3. Send photo to dashboard
   const sendPhotoToDashboard = async () => {
-    if (uploading || analyzing) return;
+    if (uploading || analyzing) {
+      return;
+    }
 
     if (!photoUri || !photoBase64.current) {
       Alert.alert(
@@ -124,10 +136,10 @@ export default function App() {
       );
 
       if (!response.ok) {
-        const errorMessage = await response.text();
+        const message = await response.text();
 
         throw new Error(
-          `Server error ${response.status}: ${errorMessage}`
+          `Server error ${response.status}: ${message}`
         );
       }
 
@@ -136,6 +148,8 @@ export default function App() {
         'Photo sent to your laptop successfully.'
       );
     } catch (error) {
+      console.error('Photo upload error:', error);
+
       Alert.alert(
         'Upload failed',
         error instanceof Error
@@ -147,9 +161,11 @@ export default function App() {
     }
   };
 
-  // 4. Read the AI response aloud
+  // 4. Speak the simulated AI answer
   const speakAnswer = async () => {
-    if (!aiAnswer) return;
+    if (!aiAnswer) {
+      return;
+    }
 
     try {
       await Speech.stop();
@@ -159,7 +175,9 @@ export default function App() {
         rate: 0.9,
         pitch: 1.0,
       });
-    } catch {
+    } catch (error) {
+      console.error('Speech error:', error);
+
       Alert.alert(
         'Speech error',
         'Could not speak the response.'
@@ -167,9 +185,11 @@ export default function App() {
     }
   };
 
-  // 5. Return to the camera
+  // 5. Retake captured photo
   const retakePhoto = () => {
-    if (analyzing || uploading) return;
+    if (analyzing || uploading) {
+      return;
+    }
 
     void Speech.stop();
 
@@ -180,9 +200,11 @@ export default function App() {
     setCameraReady(false);
   };
 
-  // 6. Close camera and reset everything
+  // 6. Close Expo camera
   const closeCamera = () => {
-    if (analyzing || uploading) return;
+    if (analyzing || uploading) {
+      return;
+    }
 
     void Speech.stop();
 
@@ -194,7 +216,16 @@ export default function App() {
     setAiAnswer(null);
   };
 
-  // 7. Check camera permission
+  // 7. Open native WebRTC test
+  const openWebRtcTest = () => {
+    if (cameraOpen) {
+      return;
+    }
+
+    setWebRtcTestOpen(true);
+  };
+
+  // 8. Camera permission state
   if (!permission) {
     return (
       <View style={styles.container}>
@@ -208,7 +239,9 @@ export default function App() {
   if (!permission.granted) {
     return (
       <View style={styles.container}>
-        <Text style={styles.title}>World Voice AI</Text>
+        <Text style={styles.title}>
+          World Voice AI
+        </Text>
 
         <Text style={styles.text}>
           Camera permission is required.
@@ -227,12 +260,19 @@ export default function App() {
     );
   }
 
-  // 8. Main application interface
+  // 9. Application interface
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>World Voice AI</Text>
+      <Text style={styles.title}>
+        World Voice AI
+      </Text>
 
-      {!cameraOpen ? (
+      {webRtcTestOpen ? (
+        // NATIVE WEBRTC CAMERA TEST
+        <WebRTCCameraTest
+          onClose={() => setWebRtcTestOpen(false)}
+        />
+      ) : !cameraOpen ? (
         // HOME SCREEN
         <View style={styles.center}>
           <Text style={styles.text}>
@@ -252,6 +292,17 @@ export default function App() {
             </Text>
           </Pressable>
 
+          <Pressable
+            style={styles.buttonSecondary}
+            onPress={openWebRtcTest}
+            accessibilityRole="button"
+            accessibilityLabel="Test native WebRTC camera"
+          >
+            <Text style={styles.buttonText}>
+              Test WebRTC Camera
+            </Text>
+          </Pressable>
+
           <VoiceRecorder />
         </View>
       ) : photoUri ? (
@@ -266,7 +317,6 @@ export default function App() {
             resizeMode="contain"
           />
 
-          {/* Simulated AI analysis */}
           <Pressable
             style={[
               styles.button,
@@ -283,7 +333,6 @@ export default function App() {
             </Text>
           </Pressable>
 
-          {/* Send photo to laptop */}
           <Pressable
             style={[
               styles.button,
@@ -301,7 +350,6 @@ export default function App() {
             </Text>
           </Pressable>
 
-          {/* Display AI response */}
           {aiAnswer && (
             <View style={styles.answerBox}>
               <Text style={styles.answerTitle}>
@@ -319,13 +367,12 @@ export default function App() {
                 accessibilityLabel="Speak AI response aloud"
               >
                 <Text style={styles.buttonText}>
-                  🔊 Speak Answer
+                  Speak Answer
                 </Text>
               </Pressable>
             </View>
           )}
 
-          {/* Retake photo */}
           <Pressable
             style={styles.buttonSecondary}
             onPress={retakePhoto}
@@ -337,7 +384,6 @@ export default function App() {
             </Text>
           </Pressable>
 
-          {/* Close camera */}
           <Pressable
             style={styles.buttonSecondary}
             onPress={closeCamera}
@@ -350,19 +396,19 @@ export default function App() {
           </Pressable>
         </ScrollView>
       ) : (
-        // LIVE CAMERA SCREEN
+        // EXISTING EXPO CAMERA SCREEN
         <>
           <CameraView
             ref={cameraRef}
             style={styles.camera}
             facing="back"
             onCameraReady={() => setCameraReady(true)}
-            onMountError={() =>
+            onMountError={() => {
               Alert.alert(
                 'Camera error',
                 'Camera could not start.'
-              )
-            }
+              );
+            }}
           />
 
           <Pressable
@@ -393,10 +439,12 @@ export default function App() {
         </>
       )}
 
-      <Text style={styles.note}>
-        Demo mode — photos are sent over local Wi-Fi
-        only when you press Send Photo.
-      </Text>
+      {!webRtcTestOpen && (
+        <Text style={styles.note}>
+          Demo mode - photos are sent over local Wi-Fi
+          only when you press Send Photo.
+        </Text>
+      )}
 
       <StatusBar style="light" />
     </View>
