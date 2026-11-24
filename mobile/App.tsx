@@ -22,7 +22,7 @@ import {
 import VoiceRecorder from './Components/VoiceRecorder';
 import WebRTCCameraTest from './Components/WebRTCCameraTest';
 
-import { analyzePhoto } from './Services/aiService';
+import { requestAiAnalysis } from './Services/aiService';
 
 // Laptop Wi-Fi IP.
 // Change this if your laptop IP changes.
@@ -73,6 +73,16 @@ export default function App() {
 
   const [aiAnswer, setAiAnswer] =
     useState<string | null>(null);
+
+  // ========================================
+  // VOICE QUESTION STATE - NEW
+  // ========================================
+
+  // Keep the recognized question in App.tsx
+  // so navigating to the camera does not
+  // remove it.
+  const [recognizedQuestion, setRecognizedQuestion] =
+    useState('');
 
   // ========================================
   // PHOTO UPLOAD STATE
@@ -147,10 +157,15 @@ export default function App() {
       setAnalyzing(true);
       setAiAnswer(null);
 
-      const answer =
-        await analyzePhoto(photoUri);
+      // Still uses our demo AI for now.
+      // The question will be connected to
+      // aiService.ts in the next step.
+      const result = await requestAiAnalysis({
+  photoUri,
+  question: recognizedQuestion.trim(),
+});
 
-      setAiAnswer(answer);
+setAiAnswer(result.answer);
     } catch (error) {
       console.error(
         'Analysis error:',
@@ -281,6 +296,8 @@ export default function App() {
     setPhotoUri(null);
     setAiAnswer(null);
     setCameraReady(false);
+
+    // Keep the recognized question.
   };
 
   // ========================================
@@ -300,6 +317,8 @@ export default function App() {
     setCameraReady(false);
     setPhotoUri(null);
     setAiAnswer(null);
+
+    // Keep the question for the next photo.
   };
 
   // ========================================
@@ -384,7 +403,7 @@ export default function App() {
       ) : !cameraOpen ? (
 
         // ====================================
-        // HOME SCREEN - NOW SCROLLABLE
+        // HOME SCREEN
         // ====================================
 
         <ScrollView
@@ -395,8 +414,6 @@ export default function App() {
           showsVerticalScrollIndicator={true}
           keyboardShouldPersistTaps="handled"
         >
-
-          {/* APPLICATION HEADER */}
 
           <Text style={styles.title}>
             World Voice AI
@@ -435,11 +452,25 @@ export default function App() {
             </Text>
           </Pressable>
 
-          {/* AUDIO RECORDING + SPEECH TO TEXT */}
+          {/* VOICE RECORDING + SPEECH TO TEXT */}
 
-          <VoiceRecorder />
+          <VoiceRecorder
+            onQuestionRecognized={setRecognizedQuestion}
+          />
 
-          {/* FOOTER - INSIDE SCROLLVIEW */}
+          {/* NEW: DISPLAY THE SAVED QUESTION */}
+
+          {recognizedQuestion.length > 0 && (
+            <View style={styles.questionBox}>
+              <Text style={styles.questionTitle}>
+                Current Question
+              </Text>
+
+              <Text style={styles.questionText}>
+                {recognizedQuestion}
+              </Text>
+            </View>
+          )}
 
           <Text style={styles.note}>
             Demo mode - photos are sent over
@@ -472,6 +503,20 @@ export default function App() {
             style={styles.photoPreview}
             resizeMode="contain"
           />
+
+          {/* NEW: SHOW THE QUESTION WITH PHOTO */}
+
+          {recognizedQuestion.length > 0 && (
+            <View style={styles.questionBox}>
+              <Text style={styles.questionTitle}>
+                Your Voice Question
+              </Text>
+
+              <Text style={styles.questionText}>
+                {recognizedQuestion}
+              </Text>
+            </View>
+          )}
 
           {/* ANALYZE PHOTO */}
 
@@ -673,7 +718,6 @@ const styles = StyleSheet.create({
     paddingBottom: 14,
   },
 
-  // Main application title
   title: {
     color: '#FFFFFF',
     fontSize: 30,
@@ -690,15 +734,11 @@ const styles = StyleSheet.create({
     marginBottom: 20,
   },
 
-  // Shared scrolling area
   scrollArea: {
     flex: 1,
     width: '100%',
   },
 
-  // Home screen:
-  // No vertical centering or fixed height.
-  // Everything can scroll naturally.
   homeContent: {
     flexGrow: 1,
     paddingTop: 6,
@@ -710,7 +750,6 @@ const styles = StyleSheet.create({
     paddingBottom: 36,
   },
 
-  // Camera preview
   camera: {
     flex: 1,
     borderRadius: 12,
@@ -724,7 +763,6 @@ const styles = StyleSheet.create({
     backgroundColor: '#0F172A',
   },
 
-  // Main buttons
   button: {
     backgroundColor: '#5DD6C0',
     padding: 16,
@@ -763,7 +801,6 @@ const styles = StyleSheet.create({
     marginVertical: 12,
   },
 
-  // Captured photo response
   answerBox: {
     backgroundColor: '#1E293B',
     borderRadius: 12,
@@ -784,8 +821,29 @@ const styles = StyleSheet.create({
     lineHeight: 24,
   },
 
-  // Footer now belongs to the scrollable
-  // content instead of sitting outside it.
+  // NEW: QUESTION DISPLAY
+  questionBox: {
+    backgroundColor: '#1E293B',
+    borderRadius: 12,
+    padding: 15,
+    marginTop: 15,
+    borderWidth: 1,
+    borderColor: '#5DD6C0',
+  },
+
+  questionTitle: {
+    color: '#5DD6C0',
+    fontSize: 17,
+    fontWeight: 'bold',
+    marginBottom: 8,
+  },
+
+  questionText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    lineHeight: 24,
+  },
+
   note: {
     color: '#D1D5DB',
     textAlign: 'center',

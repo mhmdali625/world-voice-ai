@@ -27,7 +27,15 @@ import {
   useSpeechRecognitionEvent,
 } from 'expo-speech-recognition';
 
-export default function VoiceRecorder() {
+// NEW: Allow the parent component to receive
+// the question after speech recognition.
+type VoiceRecorderProps = {
+  onQuestionRecognized?: (question: string) => void;
+};
+
+export default function VoiceRecorder({
+  onQuestionRecognized,
+}: VoiceRecorderProps) {
   // ========================================
   // AUDIO RECORDING
   // ========================================
@@ -81,8 +89,6 @@ export default function VoiceRecorder() {
   // AUTOMATIC SPOKEN FEEDBACK
   // ========================================
 
-  // Check TalkBack before speaking. Android
-  // screen readers already provide feedback.
   const canSpeakAutomatically = async () => {
     try {
       const screenReaderEnabled =
@@ -90,14 +96,10 @@ export default function VoiceRecorder() {
 
       return !screenReaderEnabled;
     } catch {
-      // If accessibility status is unknown,
-      // avoid creating overlapping speech.
       return false;
     }
   };
 
-  // Speak a message and resolve when the
-  // announcement has finished playing.
   const speakAndWait = async (message: string) => {
     await new Promise<void>((resolve) => {
       try {
@@ -120,7 +122,6 @@ export default function VoiceRecorder() {
     });
   };
 
-  // Speak without blocking the interface.
   const speakFeedback = async (message: string) => {
     const allowed = await canSpeakAutomatically();
 
@@ -166,6 +167,11 @@ export default function VoiceRecorder() {
 
     if (event.isFinal) {
       finalTranscriptRef.current = recognizedText;
+
+      // NEW:
+      // Send the final recognized question
+      // to App.tsx through a callback.
+      onQuestionRecognized?.(recognizedText);
     }
   });
 
@@ -680,7 +686,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginTop: 10,
     minHeight: 54,
-    justifyContent: 'center',
   },
 
   stopButton: {
