@@ -22,7 +22,7 @@ import {
 import VoiceRecorder from './Components/VoiceRecorder';
 import WebRTCCameraTest from './Components/WebRTCCameraTest';
 
-import { analyzePhoto } from './Services/mockAi';
+import { analyzePhoto } from './Services/aiService';
 
 // Laptop Wi-Fi IP.
 // Change this if your laptop IP changes.
