@@ -1,13 +1,16 @@
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 import {
+  AccessibilityInfo,
   Alert,
   Pressable,
   StyleSheet,
   Text,
   View,
 } from 'react-native';
+
+import * as Speech from 'expo-speech';
 
 import {
   AudioModule,
@@ -26,7 +29,7 @@ import {
 
 export default function VoiceRecorder() {
   // ========================================
-  // EXISTING AUDIO RECORDER
+  // AUDIO RECORDING
   // ========================================
 
   const recorder = useAudioRecorder(
@@ -46,7 +49,7 @@ export default function VoiceRecorder() {
   const [busy, setBusy] = useState(false);
 
   // ========================================
-  // NEW SPEECH-TO-TEXT STATE
+  // SPEECH-TO-TEXT
   // ========================================
 
   const [recognizing, setRecognizing] =
@@ -64,6 +67,83 @@ export default function VoiceRecorder() {
   const [recognitionError, setRecognitionError] =
     useState<string | null>(null);
 
+  // Keep the final result available to the
+  // recognition end event without stale state.
+  const finalTranscriptRef = useRef('');
+
+  // Only speak automatically when TalkBack
+  // was disabled for this recognition session.
+  const shouldSpeakResultRef = useRef(false);
+
+  const recognitionFailedRef = useRef(false);
+
+  // ========================================
+  // AUTOMATIC SPOKEN FEEDBACK
+  // ========================================
+
+  // Check TalkBack before speaking. Android
+  // screen readers already provide feedback.
+  const canSpeakAutomatically = async () => {
+    try {
+      const screenReaderEnabled =
+        await AccessibilityInfo.isScreenReaderEnabled();
+
+      return !screenReaderEnabled;
+    } catch {
+      // If accessibility status is unknown,
+      // avoid creating overlapping speech.
+      return false;
+    }
+  };
+
+  // Speak a message and resolve when the
+  // announcement has finished playing.
+  const speakAndWait = async (message: string) => {
+    await new Promise<void>((resolve) => {
+      try {
+        Speech.speak(message, {
+          language: 'en-US',
+          rate: 0.9,
+          pitch: 1.0,
+          onDone: () => resolve(),
+          onStopped: () => resolve(),
+          onError: () => resolve(),
+        });
+      } catch (error) {
+        console.warn(
+          'Voice feedback error:',
+          error
+        );
+
+        resolve();
+      }
+    });
+  };
+
+  // Speak without blocking the interface.
+  const speakFeedback = async (message: string) => {
+    const allowed = await canSpeakAutomatically();
+
+    if (!allowed) {
+      return;
+    }
+
+    try {
+      await Speech.stop();
+
+      Speech.speak(message, {
+        language: 'en-US',
+        rate: 0.9,
+        pitch: 1.0,
+      });
+    } catch (error) {
+      console.warn(
+        'Spoken feedback error:',
+        error
+      );
+    }
+  };
+
   // ========================================
   // SPEECH RECOGNITION EVENTS
   // ========================================
@@ -73,21 +153,23 @@ export default function VoiceRecorder() {
     setRecognitionError(null);
   });
 
-  useSpeechRecognitionEvent('end', () => {
-    setRecognizing(false);
-  });
+  useSpeechRecognitionEvent('result', (event) => {
+    const recognizedText =
+      event.results[0]?.transcript?.trim() ?? '';
 
-  useSpeechRecognitionEvent('result', event => {
-    const text =
-      event.results[0]?.transcript ?? '';
+    if (!recognizedText) {
+      return;
+    }
 
-    if (text.trim()) {
-      setTranscript(text);
-      setIsFinalTranscript(event.isFinal);
+    setTranscript(recognizedText);
+    setIsFinalTranscript(event.isFinal);
+
+    if (event.isFinal) {
+      finalTranscriptRef.current = recognizedText;
     }
   });
 
-  useSpeechRecognitionEvent('error', event => {
+  useSpeechRecognitionEvent('error', (event) => {
     console.error(
       '[Speech Recognition]',
       event.error,
@@ -96,6 +178,8 @@ export default function VoiceRecorder() {
 
     setRecognizing(false);
 
+    recognitionFailedRef.current = true;
+
     if (event.error !== 'aborted') {
       setRecognitionError(
         event.message || event.error
@@ -103,16 +187,44 @@ export default function VoiceRecorder() {
     }
   });
 
+  useSpeechRecognitionEvent('end', () => {
+    setRecognizing(false);
+
+    const shouldSpeak =
+      shouldSpeakResultRef.current;
+
+    // Prevent duplicate announcements.
+    shouldSpeakResultRef.current = false;
+
+    if (!shouldSpeak || recognitionFailedRef.current) {
+      return;
+    }
+
+    const recognizedQuestion =
+      finalTranscriptRef.current.trim();
+
+    if (recognizedQuestion) {
+      void speakFeedback(
+        `Question recognized. I heard: ${recognizedQuestion}`
+      );
+    } else {
+      void speakFeedback(
+        "I couldn't recognize your question. Please try again."
+      );
+    }
+  });
+
+  // Cleanup when leaving the component.
   useEffect(() => {
     return () => {
-      // Do not leave Android speech recognition
-      // listening when this screen closes.
       ExpoSpeechRecognitionModule.abort();
+
+      void Speech.stop();
     };
   }, []);
 
   // ========================================
-  // 1. START AUDIO RECORDING
+  // START AUDIO RECORDING
   // ========================================
 
   const startRecording = async () => {
@@ -139,6 +251,8 @@ export default function VoiceRecorder() {
 
         return;
       }
+
+      await Speech.stop();
 
       player.pause();
       setRecordingUri(null);
@@ -167,7 +281,7 @@ export default function VoiceRecorder() {
   };
 
   // ========================================
-  // 2. STOP AUDIO RECORDING
+  // STOP AUDIO RECORDING
   // ========================================
 
   const stopRecording = async () => {
@@ -215,7 +329,7 @@ export default function VoiceRecorder() {
   };
 
   // ========================================
-  // 3. PLAY RECORDED AUDIO
+  // PLAY AUDIO RECORDING
   // ========================================
 
   const playRecording = async () => {
@@ -229,6 +343,8 @@ export default function VoiceRecorder() {
     }
 
     try {
+      await Speech.stop();
+
       await player.seekTo(0);
       player.play();
     } catch (error) {
@@ -245,7 +361,7 @@ export default function VoiceRecorder() {
   };
 
   // ========================================
-  // 4. START SPEECH-TO-TEXT
+  // START SPEECH-TO-TEXT
   // ========================================
 
   const startSpeechRecognition = async () => {
@@ -263,9 +379,11 @@ export default function VoiceRecorder() {
     setIsFinalTranscript(false);
     setRecognitionError(null);
 
+    finalTranscriptRef.current = '';
+    recognitionFailedRef.current = false;
+    shouldSpeakResultRef.current = false;
+
     try {
-      // Request microphone and speech
-      // recognition permissions.
       const permission =
         await ExpoSpeechRecognitionModule
           .requestPermissionsAsync();
@@ -279,16 +397,29 @@ export default function VoiceRecorder() {
         return;
       }
 
-      // Avoid simultaneous microphone
-      // usage with the audio player.
       player.pause();
+
+      await Speech.stop();
 
       await setAudioModeAsync({
         playsInSilentMode: true,
         allowsRecording: false,
       });
 
-      // Start Android speech recognition.
+      const allowAutomaticVoice =
+        await canSpeakAutomatically();
+
+      shouldSpeakResultRef.current =
+        allowAutomaticVoice;
+
+      // Speak BEFORE starting the microphone
+      // so it doesn't recognize its own voice.
+      if (allowAutomaticVoice) {
+        await speakAndWait(
+          'Listening now. Please ask your question.'
+        );
+      }
+
       ExpoSpeechRecognitionModule.start({
         lang: 'en-US',
         interimResults: true,
@@ -300,6 +431,8 @@ export default function VoiceRecorder() {
         error
       );
 
+      shouldSpeakResultRef.current = false;
+
       setRecognitionError(
         'Could not start speech recognition.'
       );
@@ -309,7 +442,7 @@ export default function VoiceRecorder() {
   };
 
   // ========================================
-  // 5. STOP SPEECH-TO-TEXT
+  // STOP SPEECH-TO-TEXT
   // ========================================
 
   const stopSpeechRecognition = () => {
@@ -347,8 +480,6 @@ export default function VoiceRecorder() {
 
   return (
     <View style={styles.container}>
-      {/* EXISTING AUDIO RECORDER */}
-
       <Text style={styles.title}>
         Voice Recording
       </Text>
@@ -378,6 +509,11 @@ export default function VoiceRecorder() {
         }
         disabled={audioControlsDisabled}
         accessibilityRole="button"
+        accessibilityLabel={
+          recorderState.isRecording
+            ? 'Stop Recording'
+            : 'Start Recording'
+        }
       >
         <Text style={styles.buttonText}>
           {recorderState.isRecording
@@ -391,10 +527,8 @@ export default function VoiceRecorder() {
           <Pressable
             style={[
               styles.playButton,
-              (
-                !playerState.isLoaded ||
-                audioControlsDisabled
-              ) &&
+              (!playerState.isLoaded ||
+                audioControlsDisabled) &&
                 styles.disabled,
             ]}
             onPress={playRecording}
@@ -403,6 +537,7 @@ export default function VoiceRecorder() {
               audioControlsDisabled
             }
             accessibilityRole="button"
+            accessibilityLabel="Play Recording"
           >
             <Text style={styles.buttonText}>
               {playerState.playing
@@ -417,8 +552,6 @@ export default function VoiceRecorder() {
         Nothing is uploaded.
       </Text>
 
-      {/* SPEECH-TO-TEXT SECTION */}
-
       <View style={styles.divider} />
 
       <Text style={styles.title}>
@@ -426,8 +559,8 @@ export default function VoiceRecorder() {
       </Text>
 
       <Text style={styles.description}>
-        Ask a question aloud and see the words
-        recognized by Android.
+        Ask a question aloud. Android will
+        convert your voice into text.
       </Text>
 
       <Pressable
@@ -447,8 +580,8 @@ export default function VoiceRecorder() {
         accessibilityRole="button"
         accessibilityLabel={
           recognizing
-            ? 'Stop speech recognition'
-            : 'Start speech recognition'
+            ? 'Stop Listening'
+            : 'Speak Question'
         }
       >
         <Text style={styles.buttonText}>
@@ -464,7 +597,7 @@ export default function VoiceRecorder() {
         {recognizing
           ? 'Listening to your question...'
           : startingRecognition
-            ? 'Starting speech recognition...'
+            ? 'Preparing microphone...'
             : transcript
               ? 'Speech recognized'
               : 'Ready to recognize speech'}
@@ -497,18 +630,17 @@ export default function VoiceRecorder() {
       )}
 
       <Text style={styles.note}>
-        Speech recognition uses the Android
-        recognition service. Depending on the
-        device, internet access may be required.
-        No question is sent to our AI backend yet.
+        Spoken feedback works automatically
+        when TalkBack is off. No question
+        is sent to the AI backend yet.
       </Text>
     </View>
   );
 }
 
-// ==========================================
+// ========================================
 // STYLES
-// ==========================================
+// ========================================
 
 const styles = StyleSheet.create({
   container: {
@@ -547,6 +679,8 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     alignItems: 'center',
     marginTop: 10,
+    minHeight: 54,
+    justifyContent: 'center',
   },
 
   stopButton: {
@@ -559,6 +693,7 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     alignItems: 'center',
     marginTop: 12,
+    minHeight: 54,
   },
 
   disabled: {
