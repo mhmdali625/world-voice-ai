@@ -1,3 +1,4 @@
+
 {
   "expo": {
     "name": "mobile",
@@ -31,7 +32,8 @@
     "plugins": [
       "expo-audio",
       "expo-asset",
-      "@config-plugins/react-native-webrtc"
+      "@config-plugins/react-native-webrtc",
+      "expo-speech-recognition"
     ],
     "extra": {
       "eas": {
