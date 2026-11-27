@@ -1,0 +1,15 @@
+# Exact versions currently installed in backend/.venv (2026-11-26).
+fastapi==0.165.0
+uvicorn==0.54.0
+python-multipart==0.0.34
+python-dotenv==1.2.4
+google-genai==3.6.1
+groq==1.7.0
+httpx==0.28.1
+pillow==13.0.0
+# Live stream (server-side WebRTC peer) - stream_service.py
+aiortc==1.17.0
+av==19.0.2
+# Face privacy (privacy.py): OpenCV YuNet face detector, model in backend/models/
+opencv-python-headless==5.1.0.95
+numpy==2.5.5

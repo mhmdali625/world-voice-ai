@@ -1,0 +1,162 @@
+{
+  "passed": 26,
+  "total": 26,
+  "results": [
+    {
+      "section": "unit",
+      "test": "split long answer into 2 sentence-aligned parts",
+      "ok": true,
+      "detail": "[65, 148]"
+    },
+    {
+      "section": "unit",
+      "test": "short answer is never split (no extra quota)",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "section": "unit",
+      "test": "parse Google daily-quota 429 (retry in 12h14m33s)",
+      "ok": true,
+      "detail": "44073.0 s, daily quota"
+    },
+    {
+      "section": "unit",
+      "test": "pause-aware segmentation loses no samples (odd chunk sizes)",
+      "ok": true,
+      "detail": "7 segments"
+    },
+    {
+      "section": "unit",
+      "test": "language check: English misdetected as Arabic -> English transcript",
+      "ok": true,
+      "detail": "English speech: en decode more confident"
+    },
+    {
+      "section": "unit",
+      "test": "language check: genuine Lebanese -> Lebanese transcript kept",
+      "ok": true,
+      "detail": "Arabic confirmed"
+    },
+    {
+      "section": "unit",
+      "test": "language check: mixed speech -> decode keeping BOTH languages",
+      "ok": true,
+      "detail": "mixed Arabic/English speech: en decode more confident"
+    },
+    {
+      "section": "unit",
+      "test": "Azure SSML: Lebanese loanword aliases, prefixes, escaping, English untouched",
+      "ok": true,
+      "detail": "5 cases, valid XML"
+    },
+    {
+      "section": "jobs",
+      "test": "10 consecutive answers (short + long): complete audio, 0 interruptions",
+      "ok": true,
+      "detail": "first sound 0.78-0.80 s"
+    },
+    {
+      "section": "jobs",
+      "test": "slow preferred voice -> answer moves to fast approved voice before playback",
+      "ok": true,
+      "detail": "used fast, first sound 3.79 s, interruptions 0"
+    },
+    {
+      "section": "jobs",
+      "test": "preferred voice fast enough -> kept (no voice change)",
+      "ok": true,
+      "detail": "used preferred"
+    },
+    {
+      "section": "jobs",
+      "test": "network error before audio -> same answer from next provider",
+      "ok": true,
+      "detail": "used fast"
+    },
+    {
+      "section": "jobs",
+      "test": "quota error before audio -> next provider",
+      "ok": true,
+      "detail": "used fast"
+    },
+    {
+      "section": "jobs",
+      "test": "all providers exhausted -> clean 429, no audio stream",
+      "ok": true,
+      "detail": "(429, 'only quota reached (simulated)') in 0.51 s"
+    },
+    {
+      "section": "jobs",
+      "test": "connection lost mid-answer -> partial audio kept, NO voice switch inside answer",
+      "ok": true,
+      "detail": "2.0 s kept, error 503"
+    },
+    {
+      "section": "playback",
+      "test": "fast provider (x2.0, first audio 0.6 s): 0 interruptions",
+      "ok": true,
+      "detail": "first sound 1.38 s"
+    },
+    {
+      "section": "playback",
+      "test": "Gemini good day (x1.1, first audio 2.5 s): 0 interruptions",
+      "ok": true,
+      "detail": "first sound 3.96 s"
+    },
+    {
+      "section": "playback",
+      "test": "Gemini free tier (x0.63, first audio 2.5 s): 0 interruptions",
+      "ok": true,
+      "detail": "first sound 16.26 s"
+    },
+    {
+      "section": "http",
+      "test": "/health",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "section": "http",
+      "test": "live stream = exact generated audio",
+      "ok": true,
+      "detail": "825164 bytes"
+    },
+    {
+      "section": "http",
+      "test": "cached replay: complete WAV, exact, instant",
+      "ok": true,
+      "detail": "0.009 s"
+    },
+    {
+      "section": "http",
+      "test": "resume after network drop: HTTP Range 206 from 5.0 s",
+      "ok": true,
+      "detail": "bytes 240044-825163/825164"
+    },
+    {
+      "section": "http",
+      "test": "unknown job -> 404",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "section": "http",
+      "test": "10 consecutive jobs over HTTP: all complete and exact",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "section": "http",
+      "test": "3 simultaneous answers: all complete and exact",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "section": "http",
+      "test": "client disconnect mid-stream, then reconnect: full audio available",
+      "ok": true,
+      "detail": ""
+    }
+  ]
+}

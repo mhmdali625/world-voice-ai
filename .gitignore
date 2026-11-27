@@ -8,3 +8,21 @@ build/
 *.log
 .git-partial/
 .claude/
+
+/backend/storage/
+/backend/benchmark_results.jsonl
+/mobile/assets/voice/_unsplit_*.wav
+/backend/test_audio/
+/backend/voice_compare/
+
+# Python bytecode
+__pycache__/
+
+# Python virtual environments
+.venv/
+venv/
+
+# Local backups and generated test artifacts
+*.bak
+/backend/test_dashboard*.png
+/backend/quota_state.json

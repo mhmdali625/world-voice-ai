@@ -4,50 +4,53 @@ import { useEffect, useRef, useState } from 'react';
 import {
   mediaDevices,
   MediaStream,
-  RTCIceCandidate,
   RTCPeerConnection,
   RTCSessionDescription,
   RTCView,
 } from 'react-native-webrtc';
 
 import {
+  AccessibilityInfo,
   Pressable,
   StyleSheet,
   Text,
   View,
 } from 'react-native';
 
+import { BACKEND_URL, authHeaders } from '../Services/config';
+import { getDeviceId } from '../Services/device';
+import { announce, playEarcon } from '../Services/feedback';
+
+import LiveAskPanel from './LiveAskPanel';
+
 type Props = {
   onClose: () => void;
+  /** Start the camera and streaming as soon as the screen opens. */
+  autoStart?: boolean;
+  /** Also listen hands-free (no button) once streaming is live. */
+  autoHandsFree?: boolean;
 };
 
-type CandidateData = {
-  candidate: string;
-  sdpMid: string | null;
-  sdpMLineIndex: number | null;
-};
+// The phone streams to the BACKEND (backend/stream_service.py),
+// which keeps useful frames for the assistant's memory and
+// forwards the video to the dashboard. Signalling is one HTTP
+// request (offer -> answer); the old WebSocket relay and its
+// hardcoded IP are no longer needed.
 
-type SignalMessage = {
-  type: string;
-  peers?: number;
-  sdp?: {
-    type: 'answer';
-    sdp: string;
-  };
-  candidate?: CandidateData;
-  message?: string;
-};
+// Phone and laptop are on the same LAN: no STUN server needed,
+// which makes negotiation fast (measured 0.12 s vs ~10 s).
+const PEER_CONFIG = { iceServers: [] };
 
-// Current laptop Wi-Fi IP.
-// Automatic retries require this address to remain valid.
-const SIGNAL_URL = 'ws://192.168.0.107:3001/signal';
+const ICE_GATHER_TIMEOUT_MS = 2000;
+const PUBLISH_TIMEOUT_MS = 15000;
 
 export default function WebRTCCameraTest({
   onClose,
+  autoStart = false,
+  autoHandsFree = false,
 }: Props) {
   const streamRef = useRef<MediaStream | null>(null);
   const peerRef = useRef<RTCPeerConnection | null>(null);
-  const socketRef = useRef<WebSocket | null>(null);
 
   const mountedRef = useRef(true);
   const cameraRequestRef = useRef(0);
@@ -55,20 +58,14 @@ export default function WebRTCCameraTest({
   // True when the user wants streaming to stay connected.
   const shouldConnectRef = useRef(false);
 
-  const offerStartedRef = useRef(false);
-  const offerSentRef = useRef(false);
-
-  const localCandidatesRef = useRef<CandidateData[]>([]);
-  const remoteCandidatesRef = useRef<CandidateData[]>([]);
+  // Increases with every new publish attempt; stale attempts
+  // compare against it and stop.
+  const attemptRef = useRef(0);
 
   // Automatic reconnection state.
   const retryCountRef = useRef(0);
 
   const retryTimerRef = useRef<
-    ReturnType<typeof setTimeout> | null
-  >(null);
-
-  const openTimerRef = useRef<
     ReturnType<typeof setTimeout> | null
   >(null);
 
@@ -83,6 +80,12 @@ export default function WebRTCCameraTest({
   const [starting, setStarting] = useState(false);
   const [connecting, setConnecting] = useState(false);
   const [status, setStatus] = useState('Camera stopped');
+
+  // True while the video connection to the backend is up.
+  const [live, setLive] = useState(false);
+
+  // Spoken connection status: once when connected, once per drop.
+  const announcedLiveRef = useRef(false);
 
   // ==========================================
   // 1. STATUS
@@ -107,13 +110,6 @@ export default function WebRTCCameraTest({
     }
   }
 
-  function clearOpenTimer() {
-    if (openTimerRef.current !== null) {
-      clearTimeout(openTimerRef.current);
-      openTimerRef.current = null;
-    }
-  }
-
   function clearPeerTimer() {
     if (peerTimerRef.current !== null) {
       clearTimeout(peerTimerRef.current);
@@ -122,24 +118,9 @@ export default function WebRTCCameraTest({
   }
 
   // ==========================================
-  // 3. SEND SIGNALING MESSAGE
+  // 3. CLOSE WEBRTC PEER (camera keeps running)
   // ==========================================
 
-  function sendSignal(message: object) {
-    const socket = socketRef.current;
-
-    if (socket?.readyState === WebSocket.OPEN) {
-      socket.send(JSON.stringify(message));
-    }
-  }
-
-  // ==========================================
-  // 4. CLOSE WEBRTC PEER
-  // ==========================================
-
-  // Important:
-  // This does NOT close the signaling socket
-  // and does NOT stop the Android camera.
   function closePeer() {
     clearPeerTimer();
 
@@ -149,43 +130,10 @@ export default function WebRTCCameraTest({
     if (peer) {
       peer.close();
     }
-
-    offerStartedRef.current = false;
-    offerSentRef.current = false;
-
-    localCandidatesRef.current = [];
-    remoteCandidatesRef.current = [];
   }
 
   // ==========================================
-  // 5. CLOSE SIGNALING SOCKET
-  // ==========================================
-
-  function closeSocket() {
-    clearOpenTimer();
-
-    const socket = socketRef.current;
-    socketRef.current = null;
-
-    if (socket) {
-      socket.onopen = null;
-      socket.onmessage = null;
-      socket.onerror = null;
-      socket.onclose = null;
-
-      try {
-        socket.close();
-      } catch (error) {
-        console.log(
-          '[WebRTC] Socket close:',
-          error
-        );
-      }
-    }
-  }
-
-  // ==========================================
-  // 6. AUTOMATIC WEBSOCKET RECONNECTION
+  // 4. AUTOMATIC RECONNECTION
   // ==========================================
 
   function scheduleReconnect() {
@@ -216,23 +164,16 @@ export default function WebRTCCameraTest({
 
     retryTimerRef.current = setTimeout(() => {
       retryTimerRef.current = null;
-      startSignaling();
+      void publish();
     }, delay);
   }
-
-  // ==========================================
-  // 7. RECOVER A STALLED WEBRTC CONNECTION
-  // ==========================================
 
   function recoverConnection() {
     if (!shouldConnectRef.current) {
       return;
     }
 
-    // Force a new signaling session.
-    closeSocket();
     closePeer();
-
     scheduleReconnect();
   }
 
@@ -260,17 +201,17 @@ export default function WebRTCCameraTest({
   }
 
   // ==========================================
-  // 8. STOP EVERYTHING
+  // 5. STOP EVERYTHING
   // ==========================================
 
   function stopEverything() {
     cameraRequestRef.current += 1;
+    attemptRef.current += 1;
 
     // Disable automatic retries.
     shouldConnectRef.current = false;
 
     clearRetryTimer();
-    closeSocket();
     closePeer();
 
     // Release the native camera.
@@ -284,13 +225,14 @@ export default function WebRTCCameraTest({
       setStreamUrl(null);
       setStarting(false);
       setConnecting(false);
+      setLive(false);
 
       updateStatus('Camera stopped');
     }
   }
 
   // ==========================================
-  // 9. COMPONENT CLEANUP
+  // 6. COMPONENT CLEANUP
   // ==========================================
 
   useEffect(() => {
@@ -299,10 +241,10 @@ export default function WebRTCCameraTest({
     return () => {
       mountedRef.current = false;
       cameraRequestRef.current += 1;
+      attemptRef.current += 1;
       shouldConnectRef.current = false;
 
       clearRetryTimer();
-      closeSocket();
       closePeer();
 
       streamRef.current?.getTracks().forEach(track => {
@@ -314,12 +256,12 @@ export default function WebRTCCameraTest({
   }, []);
 
   // ==========================================
-  // 10. START ANDROID CAMERA
+  // 7. START ANDROID CAMERA
   // ==========================================
 
-  async function startCamera() {
+  async function startCamera(): Promise<boolean> {
     if (starting || streamRef.current) {
-      return;
+      return Boolean(streamRef.current);
     }
 
     const requestId = ++cameraRequestRef.current;
@@ -344,7 +286,7 @@ export default function WebRTCCameraTest({
           track.stop();
         });
 
-        return;
+        return false;
       }
 
       streamRef.current = stream;
@@ -352,14 +294,17 @@ export default function WebRTCCameraTest({
       setStreamUrl(stream.toURL());
 
       updateStatus(
-        'Camera ready - connect to dashboard'
+        'Camera ready - start streaming'
       );
+      return true;
     } catch (error) {
       updateStatus(
         error instanceof Error
           ? `Camera error: ${error.message}`
           : 'Camera could not start'
       );
+      AccessibilityInfo.announceForAccessibility('The camera could not start.');
+      return false;
     } finally {
       if (
         mountedRef.current &&
@@ -371,59 +316,18 @@ export default function WebRTCCameraTest({
   }
 
   // ==========================================
-  // 11. CREATE A WEBRTC PEER CONNECTION
+  // 8. CREATE A WEBRTC PEER CONNECTION
   // ==========================================
 
   function createPeer(stream: MediaStream) {
-    const pc = new RTCPeerConnection({
-      iceServers: [
-        {
-          urls: 'stun:stun.l.google.com:19302',
-        },
-      ],
-    });
+    const pc = new RTCPeerConnection(PEER_CONFIG);
 
     peerRef.current = pc;
 
-    // Send the camera track to the laptop.
+    // Send the camera track to the backend.
     stream.getTracks().forEach(track => {
       pc.addTrack(track, stream);
     });
-
-    // ========================================
-    // LOCAL ICE CANDIDATES
-    // ========================================
-
-    pc.addEventListener('icecandidate', event => {
-      if (
-        peerRef.current !== pc ||
-        !event.candidate
-      ) {
-        return;
-      }
-
-      const ice = event.candidate;
-
-      const candidate: CandidateData = {
-        candidate: ice.candidate,
-        sdpMid: ice.sdpMid ?? null,
-        sdpMLineIndex: ice.sdpMLineIndex ?? null,
-      };
-
-      // Send candidates only after the SDP offer.
-      if (!offerSentRef.current) {
-        localCandidatesRef.current.push(candidate);
-      } else {
-        sendSignal({
-          type: 'candidate',
-          candidate,
-        });
-      }
-    });
-
-    // ========================================
-    // WEBRTC CONNECTION STATE
-    // ========================================
 
     pc.addEventListener(
       'connectionstatechange',
@@ -439,8 +343,20 @@ export default function WebRTCCameraTest({
           state
         );
 
+        if (mountedRef.current) {
+          setLive(state === 'connected');
+        }
+
         if (state === 'connected') {
           clearPeerTimer();
+          retryCountRef.current = 0;
+          if (!announcedLiveRef.current) {
+            announcedLiveRef.current = true;
+            void playEarcon('success');
+            AccessibilityInfo.announceForAccessibility(
+              'Assistant connected. You can ask your question.'
+            );
+          }
 
           updateStatus(
             'Connected - live video streaming!'
@@ -457,6 +373,10 @@ export default function WebRTCCameraTest({
           updateStatus(
             'Video connection failed - reconnecting...'
           );
+          if (announcedLiveRef.current) {
+            announcedLiveRef.current = false;
+            void announce('connection_failed', 'error');
+          }
 
           watchPeer(pc, 2000);
         }
@@ -467,350 +387,129 @@ export default function WebRTCCameraTest({
   }
 
   // ==========================================
-  // 12. CREATE AND SEND WEBRTC OFFER
+  // 9. WAIT FOR ICE GATHERING (non-trickle)
   // ==========================================
 
-  async function createAndSendOffer() {
-    const stream = streamRef.current;
-    const socket = socketRef.current;
+  function waitForIceGathering(pc: RTCPeerConnection) {
+    if (pc.iceGatheringState === 'complete') {
+      return Promise.resolve();
+    }
 
-    if (
-      !shouldConnectRef.current ||
-      !stream ||
-      !socket ||
-      socket.readyState !== WebSocket.OPEN ||
-      offerStartedRef.current
-    ) {
+    return new Promise<void>(resolve => {
+      const timer = setTimeout(resolve, ICE_GATHER_TIMEOUT_MS);
+
+      pc.addEventListener('icegatheringstatechange', () => {
+        if (pc.iceGatheringState === 'complete') {
+          clearTimeout(timer);
+          resolve();
+        }
+      });
+    });
+  }
+
+  // ==========================================
+  // 10. PUBLISH THE CAMERA TO THE BACKEND
+  // ==========================================
+
+  async function publish() {
+    const stream = streamRef.current;
+
+    if (!shouldConnectRef.current || !stream) {
       return;
     }
 
-    offerStartedRef.current = true;
+    const attempt = ++attemptRef.current;
 
-    const pc =
-      peerRef.current ?? createPeer(stream);
+    closePeer();
+
+    const pc = createPeer(stream);
+
+    const controller = new AbortController();
+    const timeout = setTimeout(
+      () => controller.abort(),
+      PUBLISH_TIMEOUT_MS
+    );
 
     try {
-      updateStatus(
-        'Creating WebRTC offer...'
-      );
+      updateStatus('Connecting to the assistant server...');
 
-      const offer = await pc.createOffer();
-
+      const offer = await pc.createOffer({});
       await pc.setLocalDescription(offer);
+      await waitForIceGathering(pc);
 
-      // Ignore work from a connection that has
-      // already been replaced.
+      const local = pc.localDescription;
+
       if (
+        attempt !== attemptRef.current ||
         peerRef.current !== pc ||
-        socketRef.current !== socket ||
-        !shouldConnectRef.current
+        !shouldConnectRef.current ||
+        !local
       ) {
         return;
       }
 
-      sendSignal({
-        type: 'offer',
-        sdp: {
-          type: offer.type,
-          sdp: offer.sdp,
+      const response = await fetch(`${BACKEND_URL}/stream/publish`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...authHeaders(),
         },
+        body: JSON.stringify({
+          sdp: local.sdp,
+          type: local.type,
+          device_id: getDeviceId(),
+        }),
+        signal: controller.signal,
       });
 
-      offerSentRef.current = true;
-
-      // Flush any ICE candidates collected earlier.
-      for (const candidate of localCandidatesRef.current) {
-        sendSignal({
-          type: 'candidate',
-          candidate,
-        });
-      }
-
-      localCandidatesRef.current = [];
-
-      updateStatus(
-        'Offer sent - waiting for laptop answer'
-      );
-
-      // Recover automatically if negotiation stalls.
-      watchPeer(pc, 20000);
-    } catch (error) {
-      if (peerRef.current !== pc) {
+      if (response.status === 401) {
+        updateStatus('Access code missing or wrong - check Settings, then reopen the assistant');
+        AccessibilityInfo.announceForAccessibility('The laptop needs the access code. Check the settings.');
+        shouldConnectRef.current = false;        // retrying cannot help until the code is fixed
+        setConnecting(false);
         return;
       }
 
-      console.error(
-        '[WebRTC] Offer error:',
-        error
+      if (!response.ok) {
+        throw new Error(`Server answered HTTP ${response.status}`);
+      }
+
+      const answer: { sdp: string; type: 'answer' } =
+        await response.json();
+
+      if (attempt !== attemptRef.current || peerRef.current !== pc) {
+        return;
+      }
+
+      await pc.setRemoteDescription(
+        new RTCSessionDescription(answer)
       );
 
+      if (pc.connectionState !== 'connected') {
+        updateStatus('Answer received - connecting video...');
+      }
+
+      // Recover automatically if the connection never comes up.
+      watchPeer(pc, 15000);
+    } catch (error) {
+      if (attempt !== attemptRef.current) {
+        return;
+      }
+
+      console.error('[WebRTC] Publish error:', error);
+
       updateStatus(
-        'Could not negotiate video - retrying...'
+        'Could not reach the assistant server - retrying...'
       );
 
       recoverConnection();
+    } finally {
+      clearTimeout(timeout);
     }
   }
 
   // ==========================================
-  // 13. HANDLE LAPTOP SDP ANSWER
-  // ==========================================
-
-  async function handleAnswer(
-    answer: {
-      type: 'answer';
-      sdp: string;
-    }
-  ) {
-    const pc = peerRef.current;
-
-    if (!pc || !shouldConnectRef.current) {
-      return;
-    }
-
-    await pc.setRemoteDescription(
-      new RTCSessionDescription(answer)
-    );
-
-    if (peerRef.current !== pc) {
-      return;
-    }
-
-    const queued = remoteCandidatesRef.current;
-    remoteCandidatesRef.current = [];
-
-    for (const candidate of queued) {
-      if (peerRef.current !== pc) {
-        return;
-      }
-
-      try {
-        await pc.addIceCandidate(
-          new RTCIceCandidate(candidate)
-        );
-      } catch (error) {
-        console.error(
-          '[WebRTC] Queued ICE error:',
-          error
-        );
-      }
-    }
-
-    if (pc.connectionState !== 'connected') {
-      updateStatus(
-        'Answer received - connecting video...'
-      );
-    }
-  }
-
-  // ==========================================
-  // 14. HANDLE LAPTOP ICE CANDIDATES
-  // ==========================================
-
-  async function handleRemoteCandidate(
-    candidate: CandidateData
-  ) {
-    const pc = peerRef.current;
-
-    if (!pc || !pc.remoteDescription) {
-      remoteCandidatesRef.current.push(candidate);
-      return;
-    }
-
-    await pc.addIceCandidate(
-      new RTCIceCandidate(candidate)
-    );
-  }
-
-  // ==========================================
-  // 15. CONNECT TO SIGNALING SERVER
-  // ==========================================
-
-  function startSignaling() {
-    if (
-      !mountedRef.current ||
-      !shouldConnectRef.current ||
-      !streamRef.current ||
-      socketRef.current
-    ) {
-      return;
-    }
-
-    updateStatus(
-      'Connecting to laptop signaling server...'
-    );
-
-    let socket: WebSocket;
-
-    try {
-      socket = new WebSocket(SIGNAL_URL);
-    } catch (error) {
-      console.error(
-        '[WebRTC] WebSocket creation failed:',
-        error
-      );
-
-      scheduleReconnect();
-      return;
-    }
-
-    socketRef.current = socket;
-
-    // Detect a WebSocket handshake that never finishes.
-    clearOpenTimer();
-
-    openTimerRef.current = setTimeout(() => {
-      if (
-        socketRef.current === socket &&
-        socket.readyState !== WebSocket.OPEN
-      ) {
-        console.log(
-          '[WebRTC] WebSocket connection timed out'
-        );
-
-        closeSocket();
-        closePeer();
-        scheduleReconnect();
-      }
-    }, 10000);
-
-    // ========================================
-    // WEBSOCKET CONNECTED
-    // ========================================
-
-    socket.onopen = () => {
-      if (socketRef.current !== socket) {
-        return;
-      }
-
-      clearOpenTimer();
-
-      updateStatus(
-        'Signaling connected - waiting for receiver'
-      );
-    };
-
-    // ========================================
-    // WEBSOCKET MESSAGE
-    // ========================================
-
-    socket.onmessage = async event => {
-      if (socketRef.current !== socket) {
-        return;
-      }
-
-      try {
-        const message: SignalMessage = JSON.parse(
-          String(event.data)
-        );
-
-        switch (message.type) {
-          case 'welcome':
-            // The relay accepted this connection.
-            retryCountRef.current = 0;
-
-            if (message.peers === 2) {
-              await createAndSendOffer();
-            } else {
-              updateStatus(
-                'Waiting for laptop receiver'
-              );
-            }
-
-            break;
-
-          case 'peer-ready':
-            // Laptop joined or rejoined.
-            // Generate a fresh offer if needed.
-            await createAndSendOffer();
-            break;
-
-          case 'answer':
-            if (message.sdp) {
-              await handleAnswer(message.sdp);
-            }
-            break;
-
-          case 'candidate':
-            if (message.candidate) {
-              await handleRemoteCandidate(
-                message.candidate
-              );
-            }
-            break;
-
-          case 'peer-left':
-            // Reset WebRTC, but keep WebSocket open.
-            // The next peer-ready starts a new offer.
-            closePeer();
-
-            updateStatus(
-              'Laptop receiver left - waiting for reconnection'
-            );
-            break;
-
-          case 'error':
-            updateStatus(
-              message.message ||
-                'Signaling server error'
-            );
-            break;
-        }
-      } catch (error) {
-        console.error(
-          '[WebRTC] Signaling error:',
-          error
-        );
-
-        updateStatus(
-          error instanceof Error
-            ? `Signaling error: ${error.message}`
-            : 'Could not process signaling message'
-        );
-      }
-    };
-
-    // ========================================
-    // WEBSOCKET ERROR
-    // ========================================
-
-    socket.onerror = event => {
-      if (socketRef.current === socket) {
-        console.log(
-          '[WebRTC] WebSocket error:',
-          event
-        );
-      }
-    };
-
-    // ========================================
-    // WEBSOCKET DISCONNECTED
-    // ========================================
-
-    socket.onclose = event => {
-      if (socketRef.current !== socket) {
-        return;
-      }
-
-      console.log(
-        '[WebRTC] Socket closed:',
-        event.code,
-        event.reason
-      );
-
-      clearOpenTimer();
-
-      socketRef.current = null;
-
-      closePeer();
-
-      // Automatically retry signaling.
-      scheduleReconnect();
-    };
-  }
-
-  // ==========================================
-  // 16. CONNECT BUTTON
+  // 11. CONNECT BUTTON
   // ==========================================
 
   function connectToDashboard() {
@@ -829,21 +528,38 @@ export default function WebRTCCameraTest({
     setConnecting(true);
     clearRetryTimer();
 
-    startSignaling();
+    void publish();
   }
 
   // ==========================================
-  // 17. USER INTERFACE
+  // 12. HANDS-FREE START (no tap needed)
+  // ==========================================
+
+  useEffect(() => {
+    if (!autoStart) {
+      return;
+    }
+    void (async () => {
+      updateStatus('Starting the assistant...');
+      if (await startCamera()) {
+        connectToDashboard();
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ==========================================
+  // 13. USER INTERFACE
   // ==========================================
 
   return (
     <View style={styles.container}>
       <Text style={styles.title}>
-        WebRTC Live Camera
+        Live Assistant
       </Text>
 
-      <Text style={styles.status}>
-        {status}
+      <Text style={styles.status} accessibilityLiveRegion="polite">
+        {live ? 'Camera on - streaming to the assistant' : status}
       </Text>
 
       {streamUrl ? (
@@ -861,14 +577,18 @@ export default function WebRTCCameraTest({
         </View>
       )}
 
+      <LiveAskPanel streaming={live} autoHandsFree={autoHandsFree} />
+
+      {!live && (<>
       <Pressable
         style={[
           styles.button,
           (starting || !!streamUrl) && styles.disabled,
         ]}
-        onPress={startCamera}
+        onPress={() => { void startCamera(); }}
         disabled={starting || !!streamUrl}
         accessibilityRole="button"
+        accessibilityLabel="Start camera"
       >
         <Text style={styles.buttonText}>
           {starting
@@ -885,19 +605,26 @@ export default function WebRTCCameraTest({
         onPress={connectToDashboard}
         disabled={!streamUrl || connecting}
         accessibilityRole="button"
+        accessibilityLabel="Start streaming to the assistant"
       >
         <Text style={styles.buttonText}>
-          Connect to Dashboard
+          Start Streaming
         </Text>
       </Pressable>
+      </>)}
 
       <Pressable
-        style={styles.secondaryButton}
-        onPress={stopEverything}
+        style={styles.stopButton}
+        onPress={() => {
+          stopEverything();
+          AccessibilityInfo.announceForAccessibility('Camera and microphone stopped.');
+        }}
         accessibilityRole="button"
+        accessibilityLabel="Stop camera and microphone"
+        accessibilityHint="Stops streaming and listening immediately"
       >
-        <Text style={styles.buttonText}>
-          Stop Stream & Camera
+        <Text style={styles.stopText}>
+          Stop camera and microphone
         </Text>
       </Pressable>
 
@@ -918,7 +645,7 @@ export default function WebRTCCameraTest({
 }
 
 // ==========================================
-// 18. STYLES
+// 13. STYLES
 // ==========================================
 
 const styles = StyleSheet.create({
@@ -974,6 +701,22 @@ const styles = StyleSheet.create({
 
   disabled: {
     opacity: 0.5,
+  },
+
+  stopButton: {
+    backgroundColor: '#B91C1C',
+    padding: 14,
+    borderRadius: 12,
+    marginTop: 10,
+    alignItems: 'center',
+    minHeight: 52,
+    justifyContent: 'center',
+  },
+
+  stopText: {
+    color: '#FFFFFF',
+    fontSize: 17,
+    fontWeight: 'bold',
   },
 
   buttonText: {

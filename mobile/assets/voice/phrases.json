@@ -1,0 +1,35 @@
+{
+  "ar-LB": {
+    "listening": "تفضّل، عم إسمعك.",
+    "question_received": "تمام، وصلني السؤال.",
+    "not_understood": "ما قدرت إفهم السؤال، فيك تعيدو؟",
+    "photo_taken": "أخدت الصورة.",
+    "analyzing": "لحظة، عم شوف الصورة.",
+    "analysis_failed": "ما قدرت حلّل الصورة، جرّب كمان مرّة.",
+    "connection_failed": "في مشكلة بالاتصال بالسيرفر، جرّب كمان مرّة.",
+    "voice_unavailable": "الصوت مش متوفّر هلّق، بس الجواب مكتوب عالشاشة.",
+    "ask_question_first": "إحكي سؤالك الأوّل، وبعدين صوّر."
+  },
+  "en": {
+    "listening": "Go ahead, I'm listening.",
+    "question_received": "Got your question.",
+    "not_understood": "I couldn't understand the question. Could you say it again?",
+    "photo_taken": "Photo taken.",
+    "analyzing": "One moment, I'm looking at the picture.",
+    "analysis_failed": "I couldn't analyze the photo. Please try again.",
+    "connection_failed": "I can't reach the server. Please try again.",
+    "voice_unavailable": "The voice isn't available right now, but the answer is on the screen.",
+    "ask_question_first": "Ask your question first, then take the photo."
+  },
+  "fr": {
+    "listening": "Allez-y, je vous écoute.",
+    "question_received": "J'ai bien reçu votre question.",
+    "not_understood": "Je n'ai pas compris la question. Pouvez-vous la répéter ?",
+    "photo_taken": "Photo prise.",
+    "analyzing": "Un instant, je regarde la photo.",
+    "analysis_failed": "Je n'ai pas pu analyser la photo. Réessayez.",
+    "connection_failed": "Je n'arrive pas à joindre le serveur. Réessayez.",
+    "voice_unavailable": "La voix n'est pas disponible pour le moment, mais la réponse est à l'écran.",
+    "ask_question_first": "Posez d'abord votre question, puis prenez la photo."
+  }
+}

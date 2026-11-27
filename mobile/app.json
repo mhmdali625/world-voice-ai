@@ -1,7 +1,6 @@
-
 {
   "expo": {
-    "name": "mobile",
+    "name": "World Voice AI",
     "slug": "mobile",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -33,7 +32,16 @@
       "expo-audio",
       "expo-asset",
       "@config-plugins/react-native-webrtc",
-      "expo-speech-recognition"
+      "expo-speech-recognition",
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "usesCleartextTraffic": true,
+            "extraProguardRules": "# react-native-webrtc: keep the WebRTC Java classes (JNI) for R8.\n-keep class org.webrtc.** { *; }\n-dontwarn org.webrtc.**\n"
+          }
+        }
+      ]
     ],
     "extra": {
       "eas": {

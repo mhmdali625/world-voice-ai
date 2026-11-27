@@ -2,7 +2,6 @@
 import { useEffect, useRef, useState } from 'react';
 
 import {
-  AccessibilityInfo,
   Alert,
   Pressable,
   StyleSheet,
@@ -10,7 +9,7 @@ import {
   View,
 } from 'react-native';
 
-import * as Speech from 'expo-speech';
+import { File } from 'expo-file-system';
 
 import {
   AudioModule,
@@ -22,31 +21,78 @@ import {
   useAudioPlayerStatus,
 } from 'expo-audio';
 
+import type { RecordingOptions } from 'expo-audio';
+
 import {
   ExpoSpeechRecognitionModule,
   useSpeechRecognitionEvent,
 } from 'expo-speech-recognition';
 
-// NEW: Allow the parent component to receive
-// the question after speech recognition.
+import { transcribeAudioDetailed } from '../Services/speechService';
+
+import { BackendError } from '../Services/config';
+
+import {
+  announce,
+  playEarcon,
+  setFeedbackLanguage,
+  stopFeedback,
+} from '../Services/feedback';
+
 type VoiceRecorderProps = {
-  onQuestionRecognized?: (question: string) => void;
+  onQuestionRecognized?: (
+    question: string,
+    detectedLanguage?: string | null
+  ) => void;
+  /** Called before the microphone opens, so the app can
+   *  stop any answer audio (prevents the microphone from
+   *  recording the app's own voice). */
+  onBeforeListening?: () => void;
+  /** Receives the question recording (m4a). When provided,
+   *  the parent owns the file and must delete it; it is sent
+   *  to Gemini with the photo so mixed-language questions are
+   *  understood from the original audio. */
+  onQuestionAudio?: (audioUri: string) => void;
 };
+
+// ========================================
+// SPEECH RECORDING FORMAT
+// ========================================
+//
+// Whisper converts every input to 16 kHz mono before
+// recognising it. Recording 44.1 kHz stereo at 128 kbps
+// (HIGH_QUALITY) only made the upload ~3x larger and
+// slower without improving accuracy. 16 kHz mono AAC at
+// 48 kbps keeps full speech bandwidth (up to 8 kHz).
+
+const SPEECH_RECORDING: RecordingOptions = {
+  ...RecordingPresets.HIGH_QUALITY,
+  sampleRate: 16000,
+  numberOfChannels: 1,
+  bitRate: 48000,
+};
+
+// Length of the "listening" tone, so it finishes
+// before the microphone opens and is not recorded.
+const EARCON_SETTLE_MS = 280;
+
+const delay = (ms: number) =>
+  new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 export default function VoiceRecorder({
   onQuestionRecognized,
+  onBeforeListening,
+  onQuestionAudio,
 }: VoiceRecorderProps) {
   // ========================================
-  // AUDIO RECORDING
+  // LOCAL AUDIO RECORDER
   // ========================================
 
   const recorder = useAudioRecorder(
     RecordingPresets.HIGH_QUALITY
   );
 
-  const recorderState = useAudioRecorderState(
-    recorder
-  );
+  const recorderState = useAudioRecorderState(recorder);
 
   const player = useAudioPlayer(null);
   const playerState = useAudioPlayerStatus(player);
@@ -57,7 +103,24 @@ export default function VoiceRecorder({
   const [busy, setBusy] = useState(false);
 
   // ========================================
-  // SPEECH-TO-TEXT
+  // WHISPER AUDIO RECORDER
+  // ========================================
+
+  const whisperRecorder = useAudioRecorder(
+    SPEECH_RECORDING
+  );
+
+  const [whisperRecording, setWhisperRecording] =
+    useState(false);
+
+  const [whisperStarting, setWhisperStarting] =
+    useState(false);
+
+  const [transcribing, setTranscribing] =
+    useState(false);
+
+  // ========================================
+  // SPEECH RECOGNITION STATE
   // ========================================
 
   const [recognizing, setRecognizing] =
@@ -75,78 +138,28 @@ export default function VoiceRecorder({
   const [recognitionError, setRecognitionError] =
     useState<string | null>(null);
 
-  // Keep the final result available to the
-  // recognition end event without stale state.
   const finalTranscriptRef = useRef('');
-
-  // Only speak automatically when TalkBack
-  // was disabled for this recognition session.
   const shouldSpeakResultRef = useRef(false);
-
   const recognitionFailedRef = useRef(false);
 
   // ========================================
-  // AUTOMATIC SPOKEN FEEDBACK
+  // ACCESSIBLE FEEDBACK
   // ========================================
+  //
+  // Expo Speech was removed. Feedback now uses earcons,
+  // natural Fola clips, and TalkBack announcements when
+  // the screen reader is on (see Services/feedback.ts).
 
-  const canSpeakAutomatically = async () => {
-    try {
-      const screenReaderEnabled =
-        await AccessibilityInfo.isScreenReaderEnabled();
-
-      return !screenReaderEnabled;
-    } catch {
-      return false;
-    }
-  };
-
-  const speakAndWait = async (message: string) => {
-    await new Promise<void>((resolve) => {
-      try {
-        Speech.speak(message, {
-          language: 'en-US',
-          rate: 0.9,
-          pitch: 1.0,
-          onDone: () => resolve(),
-          onStopped: () => resolve(),
-          onError: () => resolve(),
-        });
-      } catch (error) {
-        console.warn(
-          'Voice feedback error:',
-          error
-        );
-
-        resolve();
-      }
-    });
-  };
-
-  const speakFeedback = async (message: string) => {
-    const allowed = await canSpeakAutomatically();
-
-    if (!allowed) {
-      return;
-    }
-
-    try {
-      await Speech.stop();
-
-      Speech.speak(message, {
-        language: 'en-US',
-        rate: 0.9,
-        pitch: 1.0,
-      });
-    } catch (error) {
-      console.warn(
-        'Spoken feedback error:',
-        error
-      );
-    }
+  // Plays the "listening" tone, then waits until it has
+  // finished so it is not captured by the microphone.
+  const signalListening = async () => {
+    stopFeedback();
+    await playEarcon('listen_start');
+    await delay(EARCON_SETTLE_MS);
   };
 
   // ========================================
-  // SPEECH RECOGNITION EVENTS
+  // ANDROID SPEECH RECOGNITION EVENTS
   // ========================================
 
   useSpeechRecognitionEvent('start', () => {
@@ -155,35 +168,30 @@ export default function VoiceRecorder({
   });
 
   useSpeechRecognitionEvent('result', (event) => {
-    const recognizedText =
+    const text =
       event.results[0]?.transcript?.trim() ?? '';
 
-    if (!recognizedText) {
+    if (!text) {
       return;
     }
 
-    setTranscript(recognizedText);
+    setTranscript(text);
     setIsFinalTranscript(event.isFinal);
 
     if (event.isFinal) {
-      finalTranscriptRef.current = recognizedText;
-
-      // NEW:
-      // Send the final recognized question
-      // to App.tsx through a callback.
-      onQuestionRecognized?.(recognizedText);
+      finalTranscriptRef.current = text;
+      onQuestionRecognized?.(text);
     }
   });
 
   useSpeechRecognitionEvent('error', (event) => {
     console.error(
-      '[Speech Recognition]',
+      '[Android Speech Recognition]',
       event.error,
       event.message
     );
 
     setRecognizing(false);
-
     recognitionFailedRef.current = true;
 
     if (event.error !== 'aborted') {
@@ -199,44 +207,40 @@ export default function VoiceRecorder({
     const shouldSpeak =
       shouldSpeakResultRef.current;
 
-    // Prevent duplicate announcements.
     shouldSpeakResultRef.current = false;
 
-    if (!shouldSpeak || recognitionFailedRef.current) {
+    if (
+      !shouldSpeak ||
+      recognitionFailedRef.current
+    ) {
       return;
     }
 
-    const recognizedQuestion =
-      finalTranscriptRef.current.trim();
-
-    if (recognizedQuestion) {
-      void speakFeedback(
-        `Question recognized. I heard: ${recognizedQuestion}`
-      );
+    if (finalTranscriptRef.current.trim()) {
+      void announce('question_received', 'success');
     } else {
-      void speakFeedback(
-        "I couldn't recognize your question. Please try again."
-      );
+      void announce('not_understood', 'error');
     }
   });
 
-  // Cleanup when leaving the component.
   useEffect(() => {
     return () => {
       ExpoSpeechRecognitionModule.abort();
-
-      void Speech.stop();
+      stopFeedback();
     };
   }, []);
 
   // ========================================
-  // START AUDIO RECORDING
+  // START LOCAL AUDIO RECORDING
   // ========================================
 
   const startRecording = async () => {
     if (
       busy ||
       recorderState.isRecording ||
+      whisperRecording ||
+      whisperStarting ||
+      transcribing ||
       recognizing ||
       startingRecognition
     ) {
@@ -254,12 +258,11 @@ export default function VoiceRecorder({
           'Permission required',
           'Please allow microphone access.'
         );
-
         return;
       }
 
-      await Speech.stop();
-
+      stopFeedback();
+      onBeforeListening?.();
       player.pause();
       setRecordingUri(null);
 
@@ -269,13 +272,9 @@ export default function VoiceRecorder({
       });
 
       await recorder.prepareToRecordAsync();
-
       recorder.record();
     } catch (error) {
-      console.error(
-        'Audio recording error:',
-        error
-      );
+      console.error('Recording error:', error);
 
       Alert.alert(
         'Error',
@@ -287,14 +286,11 @@ export default function VoiceRecorder({
   };
 
   // ========================================
-  // STOP AUDIO RECORDING
+  // STOP LOCAL AUDIO RECORDING
   // ========================================
 
   const stopRecording = async () => {
-    if (
-      busy ||
-      !recorderState.isRecording
-    ) {
+    if (busy || !recorderState.isRecording) {
       return;
     }
 
@@ -305,20 +301,14 @@ export default function VoiceRecorder({
 
       const uri = recorder.uri;
 
-      if (uri) {
-        setRecordingUri(uri);
-        player.replace(uri);
-      } else {
-        Alert.alert(
-          'Error',
-          'Recording was not saved.'
-        );
+      if (!uri) {
+        throw new Error('Recording was not saved.');
       }
+
+      setRecordingUri(uri);
+      player.replace(uri);
     } catch (error) {
-      console.error(
-        'Stop recording error:',
-        error
-      );
+      console.error('Stop recording error:', error);
 
       Alert.alert(
         'Error',
@@ -335,29 +325,28 @@ export default function VoiceRecorder({
   };
 
   // ========================================
-  // PLAY AUDIO RECORDING
+  // PLAY LOCAL RECORDING
   // ========================================
 
   const playRecording = async () => {
     if (
       !recordingUri ||
       !playerState.isLoaded ||
+      busy ||
       recognizing ||
-      startingRecognition
+      whisperRecording ||
+      whisperStarting ||
+      transcribing
     ) {
       return;
     }
 
     try {
-      await Speech.stop();
-
+      stopFeedback();
       await player.seekTo(0);
       player.play();
     } catch (error) {
-      console.error(
-        'Audio playback error:',
-        error
-      );
+      console.error('Playback error:', error);
 
       Alert.alert(
         'Error',
@@ -367,13 +356,199 @@ export default function VoiceRecorder({
   };
 
   // ========================================
-  // START SPEECH-TO-TEXT
+  // WHISPER: START LISTENING
   // ========================================
 
-  const startSpeechRecognition = async () => {
+  const startWhisperRecognition = async () => {
     if (
       busy ||
       recorderState.isRecording ||
+      whisperRecording ||
+      whisperStarting ||
+      transcribing ||
+      recognizing ||
+      startingRecognition
+    ) {
+      return;
+    }
+
+    setWhisperStarting(true);
+    setTranscript('');
+    setIsFinalTranscript(false);
+    setRecognitionError(null);
+
+    try {
+      const permission =
+        await AudioModule.requestRecordingPermissionsAsync();
+
+      if (!permission.granted) {
+        Alert.alert(
+          'Microphone permission',
+          'Please allow microphone access.'
+        );
+        return;
+      }
+
+      player.pause();
+
+      // Stop any answer audio so the microphone does
+      // not record the app's own voice.
+      onBeforeListening?.();
+
+      // A 0.25 s tone replaces the ~2 s robotic
+      // "Listening now..." sentence.
+      await signalListening();
+
+      await setAudioModeAsync({
+        playsInSilentMode: true,
+        allowsRecording: true,
+      });
+
+      await whisperRecorder.prepareToRecordAsync();
+      whisperRecorder.record();
+
+      setWhisperRecording(true);
+    } catch (error) {
+      console.error(
+        'Whisper recording start error:',
+        error
+      );
+
+      setRecognitionError(
+        'Could not start the microphone.'
+      );
+
+      await setAudioModeAsync({
+        playsInSilentMode: true,
+        allowsRecording: false,
+      }).catch(() => {});
+    } finally {
+      setWhisperStarting(false);
+    }
+  };
+
+  // ========================================
+  // WHISPER: STOP AND TRANSCRIBE
+  // ========================================
+
+  const stopWhisperRecognition = async () => {
+    if (!whisperRecording || transcribing) {
+      return;
+    }
+
+    setWhisperRecording(false);
+    setTranscribing(true);
+
+    let temporaryAudioUri: string | null = null;
+
+    try {
+      await whisperRecorder.stop();
+
+      temporaryAudioUri = whisperRecorder.uri;
+
+      await setAudioModeAsync({
+        playsInSilentMode: true,
+        allowsRecording: false,
+      });
+
+      if (!temporaryAudioUri) {
+        throw new Error(
+          'The microphone produced no recording.'
+        );
+      }
+
+      void playEarcon('listen_stop');
+
+      // FastAPI forwards this recording
+      // to Whisper Large V3 through Groq.
+      const result =
+        await transcribeAudioDetailed(temporaryAudioUri);
+
+      const recognizedQuestion = result.transcript;
+
+      setTranscript(recognizedQuestion);
+      setIsFinalTranscript(true);
+      setRecognitionError(null);
+
+      // Feedback and later answers follow the language
+      // the user actually spoke.
+      setFeedbackLanguage(result.detectedLanguage);
+
+      // Send the question to the main App.
+      // Gemini Vision will use this question
+      // when analyzing the captured photo.
+      onQuestionRecognized?.(
+        recognizedQuestion,
+        result.detectedLanguage
+      );
+
+      // Hand the recording to the parent (it is sent to
+      // Gemini with the photo); the parent deletes it later.
+      if (onQuestionAudio && temporaryAudioUri) {
+        onQuestionAudio(temporaryAudioUri);
+        temporaryAudioUri = null;
+      }
+
+      void announce('question_received', 'success');
+    } catch (error) {
+      console.error(
+        'Whisper transcription error:',
+        error
+      );
+
+      setRecognitionError(
+        error instanceof Error
+          ? error.message
+          : 'Whisper could not recognize the question.'
+      );
+
+      const notUnderstood =
+        error instanceof BackendError &&
+        error.status === 422;
+
+      void announce(
+        notUnderstood
+          ? 'not_understood'
+          : 'connection_failed',
+        'error'
+      );
+    } finally {
+      // Delete the temporary audio recording.
+      if (temporaryAudioUri) {
+        try {
+          const file = new File(temporaryAudioUri);
+
+          if (file.exists) {
+            file.delete();
+          }
+        } catch (error) {
+          console.warn(
+            'Could not remove temporary audio:',
+            error
+          );
+        }
+      }
+
+      await setAudioModeAsync({
+        playsInSilentMode: true,
+        allowsRecording: false,
+      }).catch(() => {});
+
+      setTranscribing(false);
+    }
+  };
+
+  // ========================================
+  // ANDROID RECOGNITION FALLBACK
+  // ========================================
+
+  const startAndroidRecognition = async () => {
+    if (
+      busy ||
+      recorderState.isRecording ||
+      whisperRecording ||
+      whisperStarting ||
+      transcribing ||
       recognizing ||
       startingRecognition
     ) {
@@ -397,34 +572,22 @@ export default function VoiceRecorder({
       if (!permission.granted) {
         Alert.alert(
           'Permission required',
-          'Please allow microphone and speech recognition access.'
+          'Please allow speech recognition.'
         );
-
         return;
       }
 
       player.pause();
-
-      await Speech.stop();
+      onBeforeListening?.();
 
       await setAudioModeAsync({
         playsInSilentMode: true,
         allowsRecording: false,
       });
 
-      const allowAutomaticVoice =
-        await canSpeakAutomatically();
+      shouldSpeakResultRef.current = true;
 
-      shouldSpeakResultRef.current =
-        allowAutomaticVoice;
-
-      // Speak BEFORE starting the microphone
-      // so it doesn't recognize its own voice.
-      if (allowAutomaticVoice) {
-        await speakAndWait(
-          'Listening now. Please ask your question.'
-        );
-      }
+      await signalListening();
 
       ExpoSpeechRecognitionModule.start({
         lang: 'en-US',
@@ -433,35 +596,29 @@ export default function VoiceRecorder({
       });
     } catch (error) {
       console.error(
-        'Speech recognition start error:',
+        'Android speech recognition error:',
         error
       );
 
-      shouldSpeakResultRef.current = false;
-
       setRecognitionError(
-        'Could not start speech recognition.'
+        'Could not start Android speech recognition.'
       );
     } finally {
       setStartingRecognition(false);
     }
   };
 
-  // ========================================
-  // STOP SPEECH-TO-TEXT
-  // ========================================
-
-  const stopSpeechRecognition = () => {
+  const stopAndroidRecognition = () => {
     try {
       ExpoSpeechRecognitionModule.stop();
     } catch (error) {
       console.error(
-        'Speech recognition stop error:',
+        'Android recognition stop error:',
         error
       );
 
       setRecognitionError(
-        'Could not stop speech recognition.'
+        'Could not stop recognition.'
       );
     }
   };
@@ -473,11 +630,25 @@ export default function VoiceRecorder({
   const audioControlsDisabled =
     busy ||
     recognizing ||
-    startingRecognition;
+    startingRecognition ||
+    whisperRecording ||
+    whisperStarting ||
+    transcribing;
 
-  const speechControlsDisabled =
+  const whisperButtonDisabled =
     busy ||
     recorderState.isRecording ||
+    recognizing ||
+    startingRecognition ||
+    whisperStarting ||
+    transcribing;
+
+  const androidButtonDisabled =
+    busy ||
+    recorderState.isRecording ||
+    whisperRecording ||
+    whisperStarting ||
+    transcribing ||
     startingRecognition;
 
   // ========================================
@@ -499,6 +670,8 @@ export default function VoiceRecorder({
             ? 'Audio recorded successfully!'
             : 'Microphone ready'}
       </Text>
+
+      {/* LOCAL RECORDING */}
 
       <Pressable
         style={[
@@ -554,60 +727,104 @@ export default function VoiceRecorder({
         )}
 
       <Text style={styles.note}>
-        Audio recordings stay on this device.
-        Nothing is uploaded.
+        These manual recordings stay on
+        your device and are not uploaded.
       </Text>
 
       <View style={styles.divider} />
+
+      {/* WHISPER SPEECH RECOGNITION */}
 
       <Text style={styles.title}>
         Speak Question
       </Text>
 
       <Text style={styles.description}>
-        Ask a question aloud. Android will
-        convert your voice into text.
+        Whisper can recognize English,
+        Arabic, French, and mixed speech.
+        Press Speak Question, speak,
+        then press Stop and Transcribe.
       </Text>
 
       <Pressable
         style={[
           styles.button,
-          recognizing &&
+          whisperRecording &&
             styles.stopButton,
-          speechControlsDisabled &&
+          whisperButtonDisabled &&
             styles.disabled,
         ]}
         onPress={
-          recognizing
-            ? stopSpeechRecognition
-            : startSpeechRecognition
+          whisperRecording
+            ? stopWhisperRecognition
+            : startWhisperRecognition
         }
-        disabled={speechControlsDisabled}
+        disabled={whisperButtonDisabled}
         accessibilityRole="button"
         accessibilityLabel={
-          recognizing
-            ? 'Stop Listening'
-            : 'Speak Question'
+          whisperRecording
+            ? 'Stop and transcribe question'
+            : 'Speak Question with Whisper'
         }
       >
         <Text style={styles.buttonText}>
-          {recognizing
-            ? 'Stop Listening'
-            : startingRecognition
-              ? 'Starting...'
-              : 'Speak Question'}
+          {whisperRecording
+            ? 'Stop & Transcribe'
+            : whisperStarting
+              ? 'Preparing Microphone...'
+              : transcribing
+                ? 'Whisper is Transcribing...'
+                : 'Speak Question (Whisper)'}
         </Text>
       </Pressable>
 
       <Text style={styles.status}>
-        {recognizing
+        {whisperRecording
           ? 'Listening to your question...'
-          : startingRecognition
-            ? 'Preparing microphone...'
-            : transcript
-              ? 'Speech recognized'
-              : 'Ready to recognize speech'}
+          : transcribing
+            ? 'Sending audio to Groq Whisper...'
+            : 'Whisper microphone ready'}
       </Text>
+
+      {/* ANDROID FALLBACK */}
+
+      <Text style={styles.description}>
+        If Whisper is unavailable, you can
+        still use Android speech recognition
+        in English.
+      </Text>
+
+      <Pressable
+        style={[
+          styles.playButton,
+          recognizing &&
+            styles.stopButton,
+          androidButtonDisabled &&
+            styles.disabled,
+        ]}
+        onPress={
+          recognizing
+            ? stopAndroidRecognition
+            : startAndroidRecognition
+        }
+        disabled={androidButtonDisabled}
+        accessibilityRole="button"
+        accessibilityLabel={
+          recognizing
+            ? 'Stop Android Listening'
+            : 'Use Android Speech Recognition'
+        }
+      >
+        <Text style={styles.buttonText}>
+          {recognizing
+            ? 'Stop Android Listening'
+            : startingRecognition
+              ? 'Starting Android Recognition...'
+              : 'Android Recognition (Fallback)'}
+        </Text>
+      </Pressable>
+
+      {/* RECOGNIZED QUESTION */}
 
       {transcript.trim().length > 0 && (
         <View style={styles.transcriptBox}>
@@ -627,6 +844,8 @@ export default function VoiceRecorder({
         </View>
       )}
 
+      {/* ERRORS */}
+
       {recognitionError && (
         <View style={styles.errorBox}>
           <Text style={styles.errorText}>
@@ -636,9 +855,13 @@ export default function VoiceRecorder({
       )}
 
       <Text style={styles.note}>
-        Spoken feedback works automatically
-        when TalkBack is off. No question
-        is sent to the AI backend yet.
+        Whisper speech recognition sends
+        your temporary voice recording
+        through FastAPI to Groq for
+        transcription. The app deletes
+        the temporary recording afterward.
+        With TalkBack on, status messages are
+        announced by TalkBack itself.
       </Text>
     </View>
   );
@@ -748,6 +971,7 @@ const styles = StyleSheet.create({
   errorText: {
     color: '#FCA5A5',
     fontSize: 14,
+    lineHeight: 21,
   },
 
   note: {

@@ -9,14 +9,13 @@ import { WebSocketServer, WebSocket } from 'ws';
 
 const PORT = 3001;
 
-let latestPhoto = null;
+// Photos are no longer stored in this server.
+// FastAPI owns permanent blurred-photo storage.
 
 // ==========================================
 // 1. AUTOMATIC LOCAL IP DETECTION
 // ==========================================
 
-// Detect laptop IP addresses automatically.
-// No need to hardcode 192.168.0.107 here.
 function getLocalIPs() {
   const addresses = new Set(['127.0.0.1']);
   const interfaces = networkInterfaces();
@@ -37,17 +36,16 @@ function getLocalIPs() {
   return [...addresses];
 }
 
-// Only these local development ports are allowed.
+// Local development ports.
 const ALLOWED_PORTS = [
-  3001, // Node.js relay
-  5173, // Vite
-  5174, // Vite alternate
-  5175, // Vite alternate
-  8081, // Expo Metro
-  8082, // Expo Metro alternate
+  3001,
+  5173,
+  5174,
+  5175,
+  8081,
+  8082,
 ];
 
-// Build the allowed origin list dynamically.
 function getAllowedOrigins() {
   const origins = new Set();
   const hosts = ['localhost', ...getLocalIPs()];
@@ -83,7 +81,6 @@ const server = createServer(async (req, res) => {
     'Cache-Control': 'no-store',
   };
 
-  // Allow our local React dashboard.
   if (isAllowedOrigin(req.headers.origin)) {
     headers['Access-Control-Allow-Origin'] =
       req.headers.origin;
@@ -100,7 +97,7 @@ const server = createServer(async (req, res) => {
     res.end(JSON.stringify(data));
   }
 
-  // Handle browser CORS preflight requests.
+  // Browser CORS preflight.
   if (req.method === 'OPTIONS') {
     res.writeHead(204, headers);
     res.end();
@@ -119,7 +116,7 @@ const server = createServer(async (req, res) => {
       status: 'ok',
       message: 'World Voice AI relay is running',
       services: {
-        photos: true,
+        photos: false,
         signaling: true,
       },
     });
@@ -128,112 +125,45 @@ const server = createServer(async (req, res) => {
   }
 
   // ========================================
-  // 4. GET LATEST PHOTO
+  // 4. LEGACY PHOTO ROUTE
   // ========================================
 
+  // Keep GET temporarily so the old
+  // dashboard can check this endpoint.
+  // No clear photo is returned or retained.
   if (
     req.method === 'GET' &&
     pathname === '/api/photo'
   ) {
     send(200, {
-      photo: latestPhoto,
+      photo: null,
     });
 
     return;
   }
 
-  // ========================================
-  // 5. RECEIVE PHOTO FROM ANDROID
-  // ========================================
-
+  // Reject old photo uploads.
+  // Only FastAPI handles image storage now.
   if (
     req.method === 'POST' &&
     pathname === '/api/photo'
   ) {
-    try {
-      let body = '';
-      let bodySize = 0;
-
-      for await (const chunk of req) {
-        bodySize += chunk.length;
-
-        if (bodySize > 8_000_000) {
-          send(413, {
-            error: 'Photo is too large',
-          });
-
-          return;
-        }
-
-        body += chunk.toString();
-      }
-
-      const data = JSON.parse(body);
-      const image = data.imageBase64;
-
-      if (
-        typeof image !== 'string' ||
-        !/^[A-Za-z0-9+/]+={0,2}$/.test(image) ||
-        image.length > 7_000_000
-      ) {
-        send(400, {
-          error: 'Invalid image data',
-        });
-
-        return;
-      }
-
-      const bytes = Buffer.from(image, 'base64');
-
-      // JPEG files begin with FF D8.
-      if (
-        bytes[0] !== 0xff ||
-        bytes[1] !== 0xd8
-      ) {
-        send(400, {
-          error: 'Expected a JPEG image',
-        });
-
-        return;
-      }
-
-      latestPhoto = {
-        capturedAt: new Date().toISOString(),
-        dataUrl: `data:image/jpeg;base64,${image}`,
-      };
-
-      console.log(
-        `Photo received at ${latestPhoto.capturedAt}`
-      );
-
-      send(201, {
-        success: true,
-        message: 'Photo received successfully',
-      });
-    } catch (error) {
-      console.error(
-        'Photo upload error:',
-        error instanceof Error
-          ? error.message
-          : error
-      );
-
-      send(400, {
-        error: 'Could not process photo',
-      });
-    }
+    send(410, {
+      error: 'Photo uploads are disabled on the relay.',
+      message:
+        'Analyze and save photos through FastAPI instead.',
+    });
 
     return;
   }
 
-  // Unknown HTTP route.
   send(404, {
     error: 'Route not found',
   });
 });
 
 // ==========================================
-// 6. WEBRTC SIGNALING SERVER
+// 5. WEBRTC SIGNALING SERVER
 // ==========================================
 
 const signalingServer = new WebSocketServer({
@@ -242,8 +172,7 @@ const signalingServer = new WebSocketServer({
   maxPayload: 64 * 1024,
 });
 
-// Maximum two active peers:
-// one Android phone and one browser receiver.
+// One Android phone and one browser.
 const peers = new Set();
 
 signalingServer.on(
@@ -256,8 +185,6 @@ signalingServer.on(
       origin ?? '(no Origin header)'
     );
 
-    // Recalculate accepted IPs for each connection.
-    // This handles laptop DHCP address changes.
     if (
       origin &&
       !isAllowedOrigin(origin)
@@ -294,12 +221,11 @@ signalingServer.on(
     }
 
     // ======================================
-    // 7. REGISTER CONNECTED PEER
+    // 6. REGISTER CONNECTED PEER
     // ======================================
 
     peers.add(socket);
 
-    // Used to detect abandoned connections.
     socket.isAlive = true;
 
     socket.on('pong', () => {
@@ -315,7 +241,6 @@ signalingServer.on(
       peers: peers.size,
     }));
 
-    // Notify both devices when ready.
     if (peers.size === 2) {
       console.log(
         'WebRTC room ready: 2 peers connected'
@@ -331,7 +256,7 @@ signalingServer.on(
     }
 
     // ======================================
-    // 8. FORWARD SIGNALING MESSAGES
+    // 7. FORWARD SIGNALING MESSAGES
     // ======================================
 
     socket.on('message', (raw, isBinary) => {
@@ -365,8 +290,6 @@ signalingServer.on(
         `Signaling message received: ${message.type}`
       );
 
-      // Send the offer, answer, or ICE
-      // candidate to the other peer.
       for (const peer of peers) {
         if (
           peer !== socket &&
@@ -378,7 +301,7 @@ signalingServer.on(
     });
 
     // ======================================
-    // 9. HANDLE PEER DISCONNECTION
+    // 8. HANDLE PEER DISCONNECTION
     // ======================================
 
     socket.on('close', (code, reason) => {
@@ -394,7 +317,6 @@ signalingServer.on(
         `WebRTC peers remaining: ${peers.size}/2`
       );
 
-      // Inform the remaining device.
       for (const peer of peers) {
         if (peer.readyState === WebSocket.OPEN) {
           peer.send(JSON.stringify({
@@ -414,15 +336,8 @@ signalingServer.on(
 );
 
 // ==========================================
-// 10. DETECT STALE CONNECTIONS
+// 9. DETECT STALE CONNECTIONS
 // ==========================================
-
-// Wi-Fi interruptions can leave old sockets
-// in the room even when devices are gone.
-//
-// Ping each device every 10 seconds.
-// If a device misses a heartbeat, remove
-// its connection so it can rejoin.
 
 const heartbeatInterval = setInterval(() => {
   for (const peer of peers) {
@@ -459,7 +374,7 @@ server.on('close', () => {
 });
 
 // ==========================================
-// 11. START SERVER
+// 10. START SERVER
 // ==========================================
 
 server.on('error', (error) => {
@@ -476,12 +391,15 @@ server.listen(PORT, '0.0.0.0', () => {
   console.log('================================');
 
   console.log(`HTTP Port: ${PORT}`);
+
   console.log(
     `Health: http://localhost:${PORT}/health`
   );
+
   console.log(
-    `Photos: http://localhost:${PORT}/api/photo`
+    'Legacy photo uploads: DISABLED'
   );
+
   console.log(
     `WebSocket: ws://localhost:${PORT}/signal`
   );

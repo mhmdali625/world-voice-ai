@@ -1,0 +1,214 @@
+{
+  "journal_ab": {
+    "DELETE": {
+      "n": 300,
+      "p50_ms": 9.56,
+      "p95_ms": 14.66,
+      "max_ms": 25.72
+    },
+    "WAL": {
+      "n": 300,
+      "p50_ms": 0.98,
+      "p95_ms": 1.41,
+      "max_ms": 16.64
+    }
+  },
+  "load_realistic": {
+    "devices": 4,
+    "duration_s": 20,
+    "keep_every_s": 1.5,
+    "frames": 56,
+    "analysed": 20,
+    "questions": 13,
+    "latency": {
+      "ask: keyword (FTS5)": {
+        "n": 13,
+        "p50_ms": 0.93,
+        "p95_ms": 1.44,
+        "max_ms": 1.52
+      },
+      "ask: load embeddings": {
+        "n": 13,
+        "p50_ms": 0.52,
+        "p95_ms": 0.78,
+        "max_ms": 0.88
+      },
+      "ask: memory index (40)": {
+        "n": 13,
+        "p50_ms": 1.21,
+        "p95_ms": 1.47,
+        "max_ms": 1.49
+      },
+      "ask: rank by meaning": {
+        "n": 13,
+        "p50_ms": 0.6,
+        "p95_ms": 0.99,
+        "max_ms": 1.2
+      },
+      "ask: record Q&A": {
+        "n": 13,
+        "p50_ms": 0.65,
+        "p95_ms": 0.74,
+        "max_ms": 1.04
+      },
+      "dashboard Q&A": {
+        "n": 14,
+        "p50_ms": 2.02,
+        "p95_ms": 3.5,
+        "max_ms": 3.93
+      },
+      "dashboard stats": {
+        "n": 14,
+        "p50_ms": 1.4,
+        "p95_ms": 3.5,
+        "max_ms": 3.59
+      },
+      "dashboard timeline": {
+        "n": 14,
+        "p50_ms": 2.06,
+        "p95_ms": 10.95,
+        "max_ms": 11.46
+      },
+      "insert frame": {
+        "n": 56,
+        "p50_ms": 2.06,
+        "p95_ms": 4.04,
+        "max_ms": 12.41
+      },
+      "pending batch": {
+        "n": 5,
+        "p50_ms": 1.03,
+        "p95_ms": 1.12,
+        "max_ms": 1.12
+      },
+      "retention pass": {
+        "n": 2,
+        "p50_ms": 1.11,
+        "p95_ms": 1.23,
+        "max_ms": 1.23
+      },
+      "save analysis": {
+        "n": 20,
+        "p50_ms": 1.1,
+        "p95_ms": 1.69,
+        "max_ms": 1.82
+      }
+    },
+    "cpu_percent_one_core": 1.2,
+    "peak_rss_mb": 70.0,
+    "db_mb": 1.95,
+    "frames_mb": 4.1,
+    "jpeg_kb_avg": 74.8,
+    "projected_30min_mb_4_phones": 185
+  },
+  "load_stress": {
+    "devices": 4,
+    "duration_s": 20,
+    "keep_every_s": 0.5,
+    "frames": 160,
+    "analysed": 20,
+    "questions": 13,
+    "latency": {
+      "ask: keyword (FTS5)": {
+        "n": 13,
+        "p50_ms": 0.91,
+        "p95_ms": 1.46,
+        "max_ms": 2.2
+      },
+      "ask: load embeddings": {
+        "n": 13,
+        "p50_ms": 0.51,
+        "p95_ms": 1.04,
+        "max_ms": 1.07
+      },
+      "ask: memory index (40)": {
+        "n": 13,
+        "p50_ms": 1.17,
+        "p95_ms": 2.1,
+        "max_ms": 2.42
+      },
+      "ask: rank by meaning": {
+        "n": 13,
+        "p50_ms": 0.67,
+        "p95_ms": 1.12,
+        "max_ms": 1.28
+      },
+      "ask: record Q&A": {
+        "n": 13,
+        "p50_ms": 0.56,
+        "p95_ms": 0.75,
+        "max_ms": 1.15
+      },
+      "dashboard Q&A": {
+        "n": 14,
+        "p50_ms": 1.32,
+        "p95_ms": 2.51,
+        "max_ms": 3.01
+      },
+      "dashboard stats": {
+        "n": 14,
+        "p50_ms": 1.08,
+        "p95_ms": 2.83,
+        "max_ms": 3.96
+      },
+      "dashboard timeline": {
+        "n": 14,
+        "p50_ms": 1.77,
+        "p95_ms": 2.94,
+        "max_ms": 2.96
+      },
+      "insert frame": {
+        "n": 160,
+        "p50_ms": 1.68,
+        "p95_ms": 2.86,
+        "max_ms": 11.34
+      },
+      "pending batch": {
+        "n": 5,
+        "p50_ms": 0.87,
+        "p95_ms": 1.12,
+        "max_ms": 1.12
+      },
+      "retention pass": {
+        "n": 2,
+        "p50_ms": 1.17,
+        "p95_ms": 1.23,
+        "max_ms": 1.23
+      },
+      "save analysis": {
+        "n": 20,
+        "p50_ms": 0.93,
+        "p95_ms": 1.59,
+        "max_ms": 1.66
+      }
+    },
+    "cpu_percent_one_core": 3.0,
+    "peak_rss_mb": 70.3,
+    "db_mb": 3.66,
+    "frames_mb": 11.7,
+    "jpeg_kb_avg": 75.0,
+    "projected_30min_mb_4_phones": 185
+  },
+  "search_scaling": {
+    "150": {
+      "load_ms": 1.5,
+      "rank_ms": 11.9,
+      "fts_ms": 0.78
+    },
+    "600": {
+      "load_ms": 14.6,
+      "rank_ms": 62.3,
+      "fts_ms": 2.81
+    },
+    "2400": {
+      "load_ms": 67.2,
+      "rank_ms": 221.8,
+      "fts_ms": 8.04
+    },
+    "10000": {
+      "load_ms": 376.4,
+      "rank_ms": 1141.5,
+      "fts_ms": 34.34
+    }
+  }
+}
